@@ -1,0 +1,5 @@
+ckpt/
+results/
+__pycache__/
+*.err
+*.out
