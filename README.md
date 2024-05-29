@@ -19,6 +19,7 @@ We use `torch` as the architecture to build our deep learning model, and `torch-
 ## Run the model
 
 ```
+cd code/
 python main.py
 ```
 

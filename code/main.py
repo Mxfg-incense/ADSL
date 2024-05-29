@@ -283,6 +283,9 @@ if __name__ == "__main__":
     
     
     if args.predict_novel_genes:
+        #load check point
+        print("Loading best model...")
+        model.load_state_dict(torch.load(checkpoint_path))
         print("Predicting on novel genes...")
         oos_preds = predict_oos(model, optimizer, data, device, oos_pos_edge_index, oos_neg_edge_index)
         save_dict['gene_mapping'] = gene_mapping

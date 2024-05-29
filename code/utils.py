@@ -81,23 +81,24 @@ def load_graph_data(data_dir, graph_type):
     #     # make it indirected graph
     #     data_dup = data.reindex(columns=['gene2','gene1'])
     #     data_dup.columns = ['gene1','gene2']
-    #     data = data._append(data_dup)
+    #     data = data.concat(data, data_dup)
     if graph_type == 'PPI-genetic':
-        data = pd.read_csv(f"{data_dir}/ppi_genetic.csv")
+        # extract the first two columns
+        data = pd.read_csv(f"{data_dir}/ppi_genetic.csv").iloc[:,:2]
         print("Number of edges of {}: {}".format(graph_type, data.shape[0]))
         data.rename(columns={"Protein1":"gene1", "Protein2":"gene2"}, inplace=True)
         # make it indirected graph
         data_dup = data.reindex(columns=['gene2','gene1'])
         data_dup.columns = ['gene1','gene2']
-        data = data._append(data_dup)
+        data = pd.concat([data, data_dup])
     elif graph_type == 'PPI-physical':
-        data = pd.read_csv(f"{data_dir}/ppi_physical.csv")
+        data = pd.read_csv(f"{data_dir}/ppi_physical.csv").iloc[:,:2]
         print("Number of edges of {}: {}".format(graph_type, data.shape[0]))
         data.rename(columns={"Protein1":"gene1", "Protein2":"gene2"}, inplace=True)
         # make it indirected graph
         data_dup = data.reindex(columns=['gene2','gene1'])
         data_dup.columns = ['gene1','gene2']
-        data = data._append(data_dup)
+        data = pd.concat([data, data_dup])
     elif graph_type == "pathway":
         data = pd.read_csv(f"{data_dir}/Opticon_networks.csv")
         data.rename(columns={"Regulator":"gene1", "Target gene":"gene2"}, inplace=True)
@@ -110,7 +111,7 @@ def load_graph_data(data_dir, graph_type):
         # make it indirected graph
         data_dup = data.reindex(columns=['gene2','gene1'])
         data_dup.columns = ['gene1','gene2']
-        data = data._append(data_dup)
+        data = pd.concat([data, data_dup])
     elif graph_type == "random":
         data = pd.read_csv(f"{data_dir}/BIOGRID-9606.csv", index_col=0)
         
