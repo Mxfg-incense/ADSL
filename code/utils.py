@@ -263,11 +263,11 @@ def load_CCLE_feats(data_dir, process_method, feats_list, gene_mapping, hidden_d
     return combined_embeds
 
 
-def merge_and_mapping(SL_data, graph_data_list, SL_genes):
+def merge_and_mapping(SL_data, graph_data_list, SL_genes, SL_data_novel, SL_gene_novel):
     # use the union of SL genes and graph genes as all genes
     temp_concat_graph_data = pd.concat(graph_data_list)
     graph_genes = set(temp_concat_graph_data['gene1'].unique()) | set(temp_concat_graph_data['gene2'].unique())
-    all_genes = sorted(list(set(SL_genes) | graph_genes))
+    all_genes = sorted(list(set(set(SL_genes) | set(SL_gene_novel)) | graph_genes))
 
     gene_mapping = dict(zip(all_genes, range(len(all_genes))))
 
@@ -279,11 +279,13 @@ def merge_and_mapping(SL_data, graph_data_list, SL_genes):
     
     SL_data['gene1'] = SL_data['gene1'].apply(lambda x:gene_mapping[x])
     SL_data['gene2'] = SL_data['gene2'].apply(lambda x:gene_mapping[x])
+    SL_data_novel['gene1'] = SL_data_novel['gene1'].apply(lambda x:gene_mapping[x])
+    SL_data_novel['gene2'] = SL_data_novel['gene2'].apply(lambda x:gene_mapping[x])
 
-    return SL_data, graph_data_list, gene_mapping
+    return SL_data, SL_data_novel ,graph_data_list, gene_mapping
 
     
-def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_dim, node2vec_feats_flag, threshold, graph_input, attr, split_method, predict_novel_flag, training_percent):
+def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_dim, node2vec_feats_flag, threshold, graph_input, attr, split_method, predict_novel_flag, novel_cell_name, training_percent):
     """
     Generate torch geometric data for training a model.
 
@@ -310,6 +312,8 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
     """
     # load data
     SL_data, SL_genes = load_SL_data(data_dir, cell_name, threshold)
+
+    SL_data_novel, SL_gene_novel = load_SL_data(data_dir, novel_cell_name, threshold)
     
     # generate SL torch data, split into train, valid, test
     np.random.seed(5959)
@@ -338,11 +342,19 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
 
     for graph_type in graph_input:
         if graph_type == "SL":
-            # use training part of SL data to construct input graph
-            if split_method == "novel_gene":
-                graph_data = SL_data[(SL_data['gene1'].isin(training_genes))&(SL_data['gene2'].isin(training_genes))]
-            elif split_method == "novel_pair":
-                graph_data = SL_data.iloc[all_idx[:int(len(all_idx)*training_percent)]]
+            if predict_novel_flag:
+                # use training part of SL data to construct input graph
+                if split_method == "novel_gene":
+                    graph_data = SL_data[(SL_data['gene1'].isin(training_genes))&(SL_data['gene2'].isin(training_genes))]
+                elif split_method == "novel_pair":
+                    graph_data = SL_data.iloc[all_idx[:int(len(all_idx)*training_percent)]]
+            else:
+                # use training part of SL data to construct input graph
+                if split_method == "novel_gene":
+                    graph_data = SL_data_novel[(SL_data_novel['gene1'].isin(training_genes))&(SL_data_novel['gene2'].isin(training_genes))]
+                elif split_method == "novel_pair":
+                    graph_data = SL_data_novel.iloc[all_idx[:int(len(all_idx)*training_percent)]]
+            
             graph_data = graph_data[graph_data['label']==True]
             graph_data = graph_data[['gene1','gene2']]
         elif graph_type == "PPI-genetic":
@@ -365,8 +377,8 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
         graph_data_list.append(graph_data)
         
     # merge, filter and mapping
-    SL_data, graph_data_list, gene_mapping = merge_and_mapping(SL_data, graph_data_list, SL_genes)
-    
+    SL_data, SL_data_novel, graph_data_list, gene_mapping = merge_and_mapping(SL_data, graph_data_list, SL_genes, SL_data_novel, SL_gene_novel)
+
     # generate node features
     x = choose_node_attribute(data_dir, attr, gene_mapping, cell_name, graph_data_list)
     if node2vec_feats_flag:
@@ -413,21 +425,7 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
     print("Number of positive samples in train, val and test:", num_pos_train, num_pos_val, num_pos_test)
     print("#####################################")
     
-    
-    # generate out of sample new prediction samples
-    if predict_novel_flag:
-        all_genes = set(list(gene_mapping.keys()))
-        novel_genes = all_genes - set(SL_genes)
-        #novel_genes = np.random.choice(list(novel_genes),3000,replace=False)
-        novel_gene_idx = [gene_mapping[x] for x in novel_genes]
-        novel_gene_pairs = list(itertools.combinations(novel_gene_idx, r=2))
-        SL_data_oos = pd.DataFrame(novel_gene_pairs, columns=['gene1','gene2'])
-        SL_data_oos = SL_data_oos.sample(frac=0.1, random_state=111)
-        SL_data_oos['label'] = False
-    else:
-        SL_data_oos = None
-    
-    return data, SL_data_train, SL_data_val, SL_data_test, SL_data_oos, gene_mapping
+    return data, SL_data_train, SL_data_val, SL_data_test, SL_data_novel, gene_mapping
 
 
 def generate_torch_edges(df, balanced_sample, duplicate, device):

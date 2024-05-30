@@ -18,7 +18,7 @@ def init_argparse():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('--type', type=str, default="feature", help="one of these: feature, comparison, test")
-    parser.add_argument('--data_dir', type=str, default="../data/", help="directory of the data")
+    parser.add_argument('--data_dir', type=str, default="../data", help="directory of the data")
     parser.add_argument('--data_source', type=str, default="A549", help="which cell line to train and predict")
     parser.add_argument('--threshold', type=float, default=-3, help="threshold of SL determination")
     parser.add_argument('--specific_graph', type=lambda s:[item for item in s.split("%") if item != ""], default=["SL"], help="lists of cell-specific graphs to use.")
@@ -43,7 +43,7 @@ def init_argparse():
     
     parser.add_argument('--save_results', type=int, default=0, help="whether to save test results into json")
     parser.add_argument('--split_method', type=str, default="novel_pair", help="how to split data into train, val and test")
-    parser.add_argument('--predict_novel_genes', type=int, default=0, help="whether to predict on novel out of samples")
+    parser.add_argument('--predict_novel_cellline', type=int, default=0, help="whether to predict on novel cell lines")
     parser.add_argument('--novel_cellline', type=str, default="Jurkat", help="name of novel celllines")
 
     parser.add_argument('--src_len', default=512, type=int, help='length of transformer dimention')
@@ -184,6 +184,13 @@ def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index):
     model.eval()
     x = data.x.to(device)
 
+    all_edge_index = torch.cat([pos_edge_index, neg_edge_index], dim=-1)
+    all_node_index = torch.cat((all_edge_index[0], all_edge_index[1])).unique()
+    all_node_index_map = {}  # 用来预测的边的位置进行标记
+    for i, node_index in enumerate(all_node_index):
+            all_node_index_map[node_index.item()] = i
+    link_labels = get_link_labels(pos_edge_index, neg_edge_index, device)
+
     temp_z_list = []
     for i, edge_index in enumerate(data.edge_index_list):
         edge_index = edge_index.to(device)
@@ -195,23 +202,26 @@ def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index):
         temp_z_list.append(temp_z)
     
     z = torch.cat(temp_z_list,1)
-    z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
 
     if args.pooling == "max":
+        z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
         z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
+        link_logits = model.decode(z, all_edge_index)
     elif args.pooling == "mean":
+        z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
         z = F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
+        link_logits = model.decode(z, all_edge_index)
+    elif args.pooling == "attention":
+        transformer_output = model.modified_transformer(z[all_node_index])
+        z = torch.cat((transformer_output[
+                                   [all_node_index_map[i.item()] for i in all_edge_index[0]]],
+                               transformer_output[
+                                   [all_node_index_map[i.item()] for i in all_edge_index[1]]]), dim=1)
+        link_logits = model.decode(z)
     
-    # due to the huge size of the input data, split them into 100 batches
-    batch_num = 100
-    step_size_neg = int(neg_edge_index.shape[1]/batch_num) + 1
-    link_probs = []
-    for j in tqdm(range(batch_num)):
-        temp_link_logits = model.decode(z, pos_edge_index, neg_edge_index[:,(j*step_size_neg):((j+1)*step_size_neg)])
-        temp_link_probs = temp_link_logits.sigmoid()
-        link_probs.extend(temp_link_probs.cpu().numpy().tolist())
-
-    return link_probs
+    link_probs = link_logits.sigmoid()
+    results = evaluate_performance(link_labels.cpu().numpy(), link_probs.cpu().numpy())
+    return results
 
 
 if __name__ == "__main__":
@@ -223,8 +233,8 @@ if __name__ == "__main__":
         print("Please specify input graph features...")
         sys.exit(0)
     # load data
-    data, SL_data_train, SL_data_val, SL_data_test, SL_data_oos, gene_mapping = generate_torch_geo_data(args.data_dir, args.data_source, args.CCLE, args.CCLE_dim, args.node2vec_feats, 
-                                    args.threshold, graph_input, args.node_feats, args.split_method, args.predict_novel_genes, args.training_percent)
+    data, SL_data_train, SL_data_val, SL_data_test, SL_data_novel, gene_mapping = generate_torch_geo_data(args.data_dir, args.data_source, args.CCLE, args.CCLE_dim, args.node2vec_feats, 
+                                    args.threshold, graph_input, args.node_feats, args.split_method, args.predict_novel_cellline, args.novel_cellline,  args.training_percent)
 
     num_features = data.x.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -245,54 +255,51 @@ if __name__ == "__main__":
     #train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
     val_pos_edge_index, val_neg_edge_index = generate_torch_edges(SL_data_val, True, False, device)
     test_pos_edge_index, test_neg_edge_index = generate_torch_edges(SL_data_test, True, False, device)
-    if args.predict_novel_genes:
-        oos_pos_edge_index, oos_neg_edge_index = generate_torch_edges(SL_data_oos, False, False, device)
+    if args.predict_novel_cellline:
+        novel_pos_edge_index, novel_neg_edge_index = generate_torch_edges(SL_data_novel, True, False, device)
 
     
-    train_losses = []
-    valid_losses = []
-    # initialize the early_stopping object
-    random_key = random.randint(1,100000000)
-    checkpoint_path = "../ckpt/{}.pt".format(str(random_key))
-    early_stopping = EarlyStopping(patience=args.patience, verbose=True, reverse=True, path=checkpoint_path)
+    checkpoint_path = "../ckpt/{}_{}.pt".format(args.data_source,args.model)
 
-    for epoch in range(1, args.epochs + 1):
-        # in each epoch, using different negative samples
-        train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
-        train_loss = train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index)
-        train_losses.append(train_loss)
-        val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index)
-        valid_losses.append(val_loss)
-        print('Epoch: {:03d}, loss: {:.4f}, AUC: {:.4f}, AP: {:.4f}, val_loss: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(epoch, 
-                                        train_loss, results['AUC'], results['AUPR'], val_loss, results['precision@5'],results['precision@10']))
-        
-        #early_stopping(results['aupr'], model)
-        early_stopping(val_loss, model)
-        if early_stopping.early_stop:
-            print("Early Stopping!!!")
-            break
-    
-
-    # load the last checkpoint with the best model
-    model.load_state_dict(torch.load(checkpoint_path))
-
-    test_loss, results = test_model(model, optimizer, data, device, test_pos_edge_index, test_neg_edge_index)
-    print("\ntest result:")
-    print('AUC: {:.4f}, AP: {:.4f}, F1: {:.4f}, balance_acc: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], results['precision@5'], results['precision@10']))
-    save_dict = {**vars(args), **results}
-    
-    
-    if args.predict_novel_genes:
+    if args.predict_novel_cellline:
         #load check point
         print("Loading best model...")
         model.load_state_dict(torch.load(checkpoint_path))
-        print("Predicting on novel genes...")
-        oos_preds = predict_oos(model, optimizer, data, device, oos_pos_edge_index, oos_neg_edge_index)
-        save_dict['gene_mapping'] = gene_mapping
-        save_dict['oos_samples_1'] = SL_data_oos['gene1'].values.tolist()
-        save_dict['oos_samples_2'] = SL_data_oos['gene2'].values.tolist()
-        save_dict['oos_pred'] = oos_preds
+        print("Predicting on novel the cell line...")
+        data.edge_index_list
+        results = predict_oos(model, optimizer, data, device, novel_pos_edge_index, novel_neg_edge_index)
+
+    else:
+        train_losses = []
+        valid_losses = []
+        # initialize the early_stopping object
+        early_stopping = EarlyStopping(patience=args.patience, verbose=True, reverse=True, path=checkpoint_path)
+
+        for epoch in range(1, args.epochs + 1):
+            # in each epoch, using different negative samples
+            train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
+            train_loss = train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index)
+            train_losses.append(train_loss)
+            val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index)
+            valid_losses.append(val_loss)
+            print('Epoch: {:03d}, loss: {:.4f}, AUC: {:.4f}, AP: {:.4f}, val_loss: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(epoch, 
+                                            train_loss, results['AUC'], results['AUPR'], val_loss, results['precision@5'],results['precision@10']))
+            
+            #early_stopping(results['aupr'], model)
+            early_stopping(val_loss, model)
+            if early_stopping.early_stop:
+                print("Early Stopping!!!")
+                break
+        
+
+        # load the last checkpoint with the best model
+        model.load_state_dict(torch.load(checkpoint_path))
+
+        test_loss, results = test_model(model, optimizer, data, device, test_pos_edge_index, test_neg_edge_index)
+    print("\ntest result:")
+    print('AUC: {:.4f}, AP: {:.4f}, F1: {:.4f}, balance_acc: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], results['precision@5'], results['precision@10']))
+    save_dict = {**vars(args), **results}
         
     if args.save_results:
-        with open("../results/MVGCN_{}_{}_{}.json".format(args.data_source, args.split_method, str(random_key)),"w") as f:
+        with open("../results/MVGCN_{}_{}_{}.json".format(args.data_source, args.split_method, args.model,"w")) as f:
             json.dump(save_dict, f)

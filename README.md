@@ -16,12 +16,10 @@ We use `torch` as the architecture to build our deep learning model, and `torch-
 - torch
 - torch-geometric
 
-## Run the model
+## Train the model
 
 ```
 cd code/
-python main.py
+python main.py --pooling attention --model GCN_attention --data_source A549 # training on A549 data
+python main.py --pooling attention --model GCN_attention --data_source A549 --predict_novel_cellline 1 --novel_cellline Jurkat# test on Jurkat data
 ```
-
-By default, the model runs on the 'K562' cell line using all five graph features and four types of omics features as the input.
-Please refer to "main.py" for a list of parameters to be adjusted.
