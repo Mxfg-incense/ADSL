@@ -14,6 +14,7 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from networkx.generators.random_graphs import fast_gnp_random_graph,gnp_random_graph
 from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score, precision_score, recall_score, f1_score, balanced_accuracy_score
+import random
 
 
 def generate_unique_samples(data_dir, cell_name):
@@ -84,21 +85,41 @@ def load_graph_data(data_dir, graph_type):
     #     data = data.concat(data, data_dup)
     if graph_type == 'PPI-genetic':
         # extract the first two columns
-        data = pd.read_csv(f"{data_dir}/ppi_genetic.csv").iloc[:,:2]
+        data = pd.read_csv(f"{data_dir}/filtered_genetic.csv").iloc[:,:2]
         print("Number of edges of {}: {}".format(graph_type, data.shape[0]))
-        data.rename(columns={"Protein1":"gene1", "Protein2":"gene2"}, inplace=True)
+        data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
         # make it indirected graph
         data_dup = data.reindex(columns=['gene2','gene1'])
         data_dup.columns = ['gene1','gene2']
         data = pd.concat([data, data_dup])
+
+        # sample ppi
+        G = nx.Graph()
+        G.add_edges_from(zip(data['gene1'], data['gene2']))
+        # randomly choose 50000 edges
+        sampled_edges = random.sample(G.edges, 50000)
+        
+        # create sampled_data
+        sampled_data = pd.DataFrame(sampled_edges, columns=['gene1', 'gene2'])
+        return sampled_data
     elif graph_type == 'PPI-physical':
-        data = pd.read_csv(f"{data_dir}/ppi_physical.csv").iloc[:,:2]
+        data = pd.read_csv(f"{data_dir}/filtered_physical.csv").iloc[:,:2]
         print("Number of edges of {}: {}".format(graph_type, data.shape[0]))
-        data.rename(columns={"Protein1":"gene1", "Protein2":"gene2"}, inplace=True)
+        data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
         # make it indirected graph
         data_dup = data.reindex(columns=['gene2','gene1'])
         data_dup.columns = ['gene1','gene2']
         data = pd.concat([data, data_dup])
+        
+        # sample ppi
+        G = nx.Graph()
+        G.add_edges_from(zip(data['gene1'], data['gene2']))
+        # randomly choose 50000 edges
+        sampled_edges = random.sample(G.edges, 50000)
+        
+        # create sampled_data
+        sampled_data = pd.DataFrame(sampled_edges, columns=['gene1', 'gene2'])
+        return sampled_data
     elif graph_type == "pathway":
         data = pd.read_csv(f"{data_dir}/Opticon_networks.csv")
         data.rename(columns={"Regulator":"gene1", "Target gene":"gene2"}, inplace=True)
