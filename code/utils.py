@@ -15,6 +15,7 @@ from sklearn.manifold import TSNE
 from networkx.generators.random_graphs import fast_gnp_random_graph,gnp_random_graph
 from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score, precision_score, recall_score, f1_score, balanced_accuracy_score
 import random
+import ast
 
 
 def generate_unique_samples(data_dir, cell_name):
@@ -46,6 +47,40 @@ def generate_unique_samples(data_dir, cell_name):
     
     return all_samples
 
+import os
+import numpy as np
+import torch
+
+def load_ESM_representations(data_dir, gene_mapping):
+    """
+    Load mean gene representations from 'all_protein_esm2_mean_representations.pt' file.
+
+    Args:
+        data_dir (str): Directory containing the 'all_protein_esm2_mean_representations.pt' file.
+        gene_mapping (dict): A dictionary that maps gene names to integer IDs.
+
+    Returns:
+        torch.Tensor: A 2D tensor of mean gene representations, where rows correspond to genes and columns correspond to features.
+        int: The number of genes that were successfully mapped.
+    """
+    # Load the mean representations from the .pt file
+    mean_reps_dict = torch.load(os.path.join(data_dir, 'mean_representations.pt'))
+
+    # Create a new tensor to store the mean representations
+    mean_reps = torch.zeros(len(gene_mapping), mean_reps_dict[list(mean_reps_dict.keys())[0]].shape[0])
+
+    # Count the number of genes that were successfully mapped
+    mapped_genes = 0
+    print()
+
+    # Fill the mean representations tensor using the gene mapping
+    for gene, gene_id in gene_mapping.items():
+        if gene in mean_reps_dict:
+            mean_reps[gene_id] = mean_reps_dict[gene]
+            mapped_genes += 1
+    print(f"Mapped {mapped_genes} genes out of {len(gene_mapping)}")
+
+    return mean_reps
 
 def load_SL_data(data_dir, cell_name, threshold=-3):
     if cell_name != "synlethdb":
@@ -86,39 +121,23 @@ def load_graph_data(data_dir, graph_type):
     if graph_type == 'PPI-genetic':
         # extract the first two columns
         data = pd.read_csv(f"{data_dir}/filtered_genetic.csv").iloc[:,:2]
-        print("Number of edges of {}: {}".format(graph_type, data.shape[0]))
         data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
-        # make it indirected graph
-        data_dup = data.reindex(columns=['gene2','gene1'])
-        data_dup.columns = ['gene1','gene2']
-        data = pd.concat([data, data_dup])
-
         # sample ppi
-        G = nx.Graph()
-        G.add_edges_from(zip(data['gene1'], data['gene2']))
-        # randomly choose 50000 edges
-        sampled_edges = random.sample(G.edges, 50000)
-        
-        # create sampled_data
-        sampled_data = pd.DataFrame(sampled_edges, columns=['gene1', 'gene2'])
+        sampled_data = data.sample(n=25000, random_state=42)
+        # make it indirected graph
+        data_dup = sampled_data.reindex(columns=['gene2','gene1'])
+        data_dup.columns = ['gene1','gene2']
+        sampled_data = pd.concat([sampled_data, data_dup])
         return sampled_data
     elif graph_type == 'PPI-physical':
         data = pd.read_csv(f"{data_dir}/filtered_physical.csv").iloc[:,:2]
-        print("Number of edges of {}: {}".format(graph_type, data.shape[0]))
         data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
-        # make it indirected graph
-        data_dup = data.reindex(columns=['gene2','gene1'])
-        data_dup.columns = ['gene1','gene2']
-        data = pd.concat([data, data_dup])
-        
         # sample ppi
-        G = nx.Graph()
-        G.add_edges_from(zip(data['gene1'], data['gene2']))
-        # randomly choose 50000 edges
-        sampled_edges = random.sample(G.edges, 50000)
-        
-        # create sampled_data
-        sampled_data = pd.DataFrame(sampled_edges, columns=['gene1', 'gene2'])
+        sampled_data = data.sample(n=25000, random_state=42)
+        # make it indirected graph
+        data_dup = sampled_data.reindex(columns=['gene2','gene1'])
+        data_dup.columns = ['gene1','gene2']
+        sampled_data = pd.concat([sampled_data, data_dup])
         return sampled_data
     elif graph_type == "pathway":
         data = pd.read_csv(f"{data_dir}/Opticon_networks.csv")
@@ -166,7 +185,7 @@ def choose_node_attribute(data_dir, attr, gene_mapping, cell_name, graph_data):
         dict_list = []
         for feat in feat_list:
             temp_df = pd.read_table("{}/cellline_feats/{}_{}.txt".format(data_dir,cell_name,feat),
-                                        names=['gene','value'], sep=r"\s+", na_values=[], keep_default_na=False, on_bad_lines = 'warn')
+                                        names=['gene','value'], sep=r"\s+", na_values=[], keep_default_na=False)
             # filter genes
             temp_df = temp_df[temp_df['gene'].isin(list(gene_mapping.keys()))]
             temp_dict = dict(zip(temp_df['gene'].values, temp_df['value'].values))

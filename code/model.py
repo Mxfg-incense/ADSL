@@ -88,6 +88,8 @@ class GCN_attention(torch.nn.Module):
     def modified_transformer(self,transformer_input):
         length=len(transformer_input)
         mask_matrix = self.build_mask_matrix(length)
+        print(transformer_input.size())
+        print(self.args.src_len - length)
         transformer_input = torch.cat([transformer_input, torch.zeros((self.args.src_len - length, 5 * 64))], dim=0)
         #transformer_input=self.fc_pre(transformer_input)
 
@@ -106,12 +108,12 @@ class GCN_attention(torch.nn.Module):
 
 
 class GCN_pool(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, num_graph):
+    def __init__(self, in_channels, out_channels, num_graph, esm_dim):
         super(GCN_pool, self).__init__()
         self.num_graph = num_graph
         self.conv1 = GCNConv(in_channels, 2*out_channels)
         self.conv2 = GCNConv(2*out_channels, out_channels)
-        self.fc1 = torch.nn.Linear(2*out_channels, out_channels)
+        self.fc1 = torch.nn.Linear(2*(out_channels + esm_dim), out_channels)
         self.fc2 = torch.nn.Linear(out_channels, int(out_channels/2))
         self.fc3 = torch.nn.Linear(int(out_channels/2), int(out_channels/4))
         self.fc4 = torch.nn.Linear(int(out_channels/4), 1)

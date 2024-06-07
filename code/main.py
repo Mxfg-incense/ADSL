@@ -40,7 +40,8 @@ def init_argparse():
     parser.add_argument('--out_channels', type=int, default=64, help="dimension of output channels")
     parser.add_argument('--patience', type=int, default=150, help="patience in early stopping")
     parser.add_argument('--training_percent', type=float, default=0.70, help="proportion of the SL data as training set")
-    
+    parser.add_argument('--esm_reps_flag', type=bool, default=True, help="whether or not include ESM representations into node features")
+
     parser.add_argument('--save_results', type=int, default=0, help="whether to save test results into json")
     parser.add_argument('--split_method', type=str, default="novel_pair", help="how to split data into train, val and test")
     parser.add_argument('--predict_novel_cellline', type=int, default=0, help="whether to predict on novel cell lines")
@@ -58,7 +59,7 @@ def init_argparse():
     return args
 
 
-def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index):
+def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, esm_reps_flag,data_dir):
     model.train()
     optimizer.zero_grad()
     x = data.x.to(device)
@@ -96,10 +97,17 @@ def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_
         # the pooling operation is performed on the third dimension (graphs)
             z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1).transpose(1,2)
             z = F.max_pool2d(z, (1,len(edge_index_list))).squeeze(2)
+            if esm_reps_flag:
+                esm_representation = load_ESM_representations(data_dir,gene_mapping)
+                esm_representation = esm_representation.to(device)
+                z = torch.cat([z, esm_representation], dim=1)
             link_logits = model.decode(z, this_batch_edge_index)
         elif args.pooling == "mean":
             z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1).transpose(1,2)
             z = F.avg_pool2d(z, (1,len(edge_index_list))).squeeze(2)
+            if esm_reps_flag:
+                esm_representation = load_ESM_representations(data_dir,gene_mapping)
+                z = torch.cat([z, esm_representation], dim=1)
             link_logits = model.decode(z, this_batch_edge_index)
         elif args.pooling == "attention":
             # z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1)
@@ -130,7 +138,7 @@ def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_
 
 
 @torch.no_grad()
-def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index):
+def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, esm_reps_flag,data_dir):
     model.eval()
     results = {}
     x = data.x.to(device)
@@ -153,10 +161,17 @@ def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index):
     if args.pooling == "max":
         z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
         z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
+        if esm_reps_flag:
+            esm_representation = load_ESM_representations(data_dir, gene_mapping)
+            esm_representation = esm_representation.to(device)
+            z = torch.cat([z, esm_representation], dim=1)
         link_logits = model.decode(z, all_edge_index)
     elif args.pooling == "mean":
         z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
         z = F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
+        if esm_reps_flag:
+                esm_representation = load_ESM_representations(data_dir,gene_mapping)
+                z = torch.cat([z, esm_representation], dim=1)
         link_logits = model.decode(z, all_edge_index)
     elif args.pooling == "attention":
         transformer_output = model.modified_transformer(z[all_node_index])
@@ -165,6 +180,7 @@ def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index):
                                transformer_output[
                                    [all_node_index_map[i.item()] for i in all_edge_index[1]]]), dim=1)
         link_logits = model.decode(z)
+
     
     link_probs = link_logits.sigmoid()
 
@@ -239,9 +255,13 @@ if __name__ == "__main__":
     num_features = data.x.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    esm_dim = 0
+    if args.esm_reps_flag:
+        esm_dim =1280
+
     # load model
     if args.model == "GCN_pool":
-        model = GCN_pool(num_features, args.out_channels, len(data.edge_index_list)).to(device)
+        model = GCN_pool(num_features, args.out_channels, len(data.edge_index_list),esm_dim).to(device)
     elif args.model == 'GCN_conv':
         model = GCN_conv(num_features, args.out_channels, len(data.edge_index_list)).to(device)
     elif args.model == 'GCN_multi':
@@ -278,9 +298,9 @@ if __name__ == "__main__":
         for epoch in range(1, args.epochs + 1):
             # in each epoch, using different negative samples
             train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
-            train_loss = train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index)
+            train_loss = train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, args.esm_reps_flag, args.data_dir)
             train_losses.append(train_loss)
-            val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index)
+            val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index, args.esm_reps_flag, args.data_dir)
             valid_losses.append(val_loss)
             print('Epoch: {:03d}, loss: {:.4f}, AUC: {:.4f}, AP: {:.4f}, val_loss: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(epoch, 
                                             train_loss, results['AUC'], results['AUPR'], val_loss, results['precision@5'],results['precision@10']))
