@@ -313,10 +313,12 @@ if __name__ == "__main__":
 
     
     checkpoint_path = "../ckpt/{}_{}.pt".format(args.data_source,args.model)
+
     if args.MLP_celline:
         with torch.no_grad():
             MLP_output = model.cell_line_spec_mlp(celline_feats)
-            data.x = torch.cat((data.x, MLP_output), dim = 1)    
+            data.x = torch.cat((data.x, MLP_output), dim = 1) 
+
     if args.predict_novel_cellline:
         #load check point
         print("Loading best model...")
@@ -330,7 +332,7 @@ if __name__ == "__main__":
         valid_losses = []
         # initialize the early_stopping object
         early_stopping = EarlyStopping(patience=args.patience, verbose=True, reverse=True, path=checkpoint_path)
-                  
+                     
         for epoch in range(1, args.epochs + 1):
             # in each epoch, using different negative samples
             train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
