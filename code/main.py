@@ -116,7 +116,10 @@ def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_
             if esm_reps_flag:
                 esm_representation = load_ESM_representations(data_dir,gene_mapping)
                 z = torch.cat([z, esm_representation], dim=1)
-            link_logits = model.decode(z, this_batch_edge_index)
+            if args.MLP_celline:
+                link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
+            else:
+                link_logits = model.decode(z, all_edge_index)
         elif args.pooling == "attention":
             # z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1)
             transformer_output = model.modified_transformer(z[this_batch_node_index])
@@ -183,7 +186,10 @@ def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, e
         if esm_reps_flag:
                 esm_representation = load_ESM_representations(data_dir,gene_mapping)
                 z = torch.cat([z, esm_representation], dim=1)
-        link_logits = model.decode(z, all_edge_index)
+        if args.MLP_celline:
+            link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
+        else:
+            link_logits = model.decode(z, all_edge_index)
     elif args.pooling == "attention":
         transformer_output = model.modified_transformer(z[all_node_index])
         z = torch.cat((transformer_output[
@@ -244,7 +250,14 @@ def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index, 
     elif args.pooling == "mean":
         z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
         z = F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
-        link_logits = model.decode(z, all_edge_index)
+        if esm_reps_flag:
+            esm_representation = load_ESM_representations(data_dir, gene_mapping)
+            esm_representation = esm_representation.to(device)
+            z = torch.cat([z, esm_representation], dim=1)
+        if args.MLP_celline:
+            link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
+        else:
+            link_logits = model.decode(z, all_edge_index)
     elif args.pooling == "attention":
         transformer_output = model.modified_transformer(z[all_node_index])
         z = torch.cat((transformer_output[
