@@ -39,7 +39,7 @@ def init_argparse():
     parser.add_argument('--model', type=str, default="GCN_pool", help="model type")
     parser.add_argument('--pooling', type=str, default="max", help="type of pooling operations")
     parser.add_argument('--LR', type=float, default=0.0001, help="learning rate")
-    parser.add_argument('--epochs', type=int, default=500, help="number of maximum training epochs")
+    parser.add_argument('--epochs', type=int, default=5, help="number of maximum training epochs")
     parser.add_argument('--batch_size', type=int, default=512, help="batch size")
     parser.add_argument('--out_channels', type=int, default=64, help="dimension of output channels")
     parser.add_argument('--patience', type=int, default=150, help="patience in early stopping")
@@ -64,7 +64,7 @@ def init_argparse():
     return args
 
 
-def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, esm_reps_flag,data_dir, celline_feats):
+def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, esm_reps_flag, data_dir, celline_feats):
     model.train()
     optimizer.zero_grad()
     x = data.x.to(device)
@@ -213,7 +213,7 @@ def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, e
 
 
 @torch.no_grad()
-def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index, celline_feats):
+def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index, esm_reps_flag, data_dir, celline_feats):
     model.eval()
     x = data.x.to(device)
 
@@ -313,24 +313,24 @@ if __name__ == "__main__":
 
     
     checkpoint_path = "../ckpt/{}_{}.pt".format(args.data_source,args.model)
-
+    if args.MLP_celline:
+        with torch.no_grad():
+            MLP_output = model.cell_line_spec_mlp(celline_feats)
+            data.x = torch.cat((data.x, MLP_output), dim = 1)    
     if args.predict_novel_cellline:
         #load check point
         print("Loading best model...")
         model.load_state_dict(torch.load(checkpoint_path))
         print("Predicting on novel the cell line...")
         data.edge_index_list
-        results = predict_oos(model, optimizer, data, device, novel_pos_edge_index, novel_neg_edge_index, celline_feats)
+        results = predict_oos(model, optimizer, data, device, novel_pos_edge_index, novel_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
 
     else:
         train_losses = []
         valid_losses = []
         # initialize the early_stopping object
         early_stopping = EarlyStopping(patience=args.patience, verbose=True, reverse=True, path=checkpoint_path)
-        if args.MLP_celline:
-            with torch.no_grad():
-                MLP_output = model.cell_line_spec_mlp(celline_feats)
-                data.x = torch.cat((data.x, MLP_output), dim = 1)                      
+                  
         for epoch in range(1, args.epochs + 1):
             # in each epoch, using different negative samples
             train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
