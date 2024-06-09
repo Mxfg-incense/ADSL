@@ -7,6 +7,21 @@ from torch_geometric.nn import GCNConv, GAE, VGAE
 from torch_geometric.nn import GATConv, GATv2Conv
 from torch_geometric.nn import ResGatedGraphConv, TransformerConv
 import transformer
+import torch.nn as nn
+
+class MLP(nn.Module):
+    def __init__(self, input_size):
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(input_size, 64)
+        self.fc2 = nn.Linear(64, 32)
+        # self.MLP = MLP(4)
+        self.fc3 = nn.Linear(32, 16)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
 
 class Transformers_model(torch.nn.Module):
     def __init__(self, args):
@@ -118,6 +133,7 @@ class GCN_pool(torch.nn.Module):
         self.fc3 = torch.nn.Linear(int(out_channels/2), int(out_channels/4))
         self.fc4 = torch.nn.Linear(int(out_channels/4), 1)
         self.dropout = torch.nn.Dropout(0.5)
+        self.cell_line_spec_mlp = MLP(4)
 
     def encode(self, x, edge_index):
         x = self.conv1(x, edge_index).relu()
@@ -134,7 +150,19 @@ class GCN_pool(torch.nn.Module):
         x = self.dropout(x)
         x = self.fc4(x)
         return torch.squeeze(x)
-    
+
+    def MLP_decode(self, z, other, edge_index):
+        MLP_output = self.cell_line_spec_mlp(other)
+        x = torch.cat((z, MLP_output), dim = 1)
+        x = torch.cat((z[edge_index[0]],z[edge_index[1]]),dim=1)
+        x = self.fc1(x).relu()
+        x = self.dropout(x)
+        x = self.fc2(x).relu()
+        x = self.dropout(x)
+        x = self.fc3(x).relu()
+        x = self.dropout(x)
+        x = self.fc4(x)
+        return torch.squeeze(x)
 
 class GCN_conv(torch.nn.Module):
     def __init__(self, in_channels, out_channels, num_graph):

@@ -12,6 +12,10 @@ from utils import *
 from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score, precision_score, recall_score, f1_score
 from model import *
 
+import torch.nn as nn
+from sklearn.preprocessing import LabelEncoder
+import torch.optim as optim
+
 
 
 def init_argparse():
@@ -32,8 +36,8 @@ def init_argparse():
     parser.add_argument('--CCLE_dim', type=int, default=64, help="dimension of embeddings for each type of CCLE omics data")
     parser.add_argument('--node2vec_feats', type=int, default=0, help="whether or not using node2vec embeddings")
 
-    parser.add_argument('--model', type=str, default="GCN_attention", help="model type")
-    parser.add_argument('--pooling', type=str, default="attention", help="type of pooling operations")
+    parser.add_argument('--model', type=str, default="GCN_pool", help="model type")
+    parser.add_argument('--pooling', type=str, default="max", help="type of pooling operations")
     parser.add_argument('--LR', type=float, default=0.0001, help="learning rate")
     parser.add_argument('--epochs', type=int, default=500, help="number of maximum training epochs")
     parser.add_argument('--batch_size', type=int, default=512, help="batch size")
@@ -46,6 +50,7 @@ def init_argparse():
     parser.add_argument('--split_method', type=str, default="novel_pair", help="how to split data into train, val and test")
     parser.add_argument('--predict_novel_cellline', type=int, default=0, help="whether to predict on novel cell lines")
     parser.add_argument('--novel_cellline', type=str, default="Jurkat", help="name of novel celllines")
+    parser.add_argument('--MLP_celline', type=bool, default=True, help="use celline feats or not")
 
     parser.add_argument('--src_len', default=512, type=int, help='length of transformer dimention')
     parser.add_argument('--d_model', default=512, type=int, help='Embedding Size')
@@ -59,7 +64,7 @@ def init_argparse():
     return args
 
 
-def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, esm_reps_flag,data_dir):
+def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, esm_reps_flag,data_dir, celline_feats):
     model.train()
     optimizer.zero_grad()
     x = data.x.to(device)
@@ -101,7 +106,10 @@ def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_
                 esm_representation = load_ESM_representations(data_dir,gene_mapping)
                 esm_representation = esm_representation.to(device)
                 z = torch.cat([z, esm_representation], dim=1)
-            link_logits = model.decode(z, this_batch_edge_index)
+            if args.MLP_celline:
+                link_logits = model.MLP_decode(z, celline_feats, this_batch_edge_index)
+            else:
+                link_logits = model.decode(z, this_batch_edge_index)
         elif args.pooling == "mean":
             z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1).transpose(1,2)
             z = F.avg_pool2d(z, (1,len(edge_index_list))).squeeze(2)
@@ -138,7 +146,7 @@ def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_
 
 
 @torch.no_grad()
-def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, esm_reps_flag,data_dir):
+def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, esm_reps_flag,data_dir, celline_feats):
     model.eval()
     results = {}
     x = data.x.to(device)
@@ -165,7 +173,10 @@ def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, e
             esm_representation = load_ESM_representations(data_dir, gene_mapping)
             esm_representation = esm_representation.to(device)
             z = torch.cat([z, esm_representation], dim=1)
-        link_logits = model.decode(z, all_edge_index)
+        if args.MLP_celline:
+            link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
+        else:
+            link_logits = model.decode(z, all_edge_index)
     elif args.pooling == "mean":
         z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
         z = F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
@@ -196,7 +207,7 @@ def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, e
 
 
 @torch.no_grad()
-def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index):
+def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index, celline_feats):
     model.eval()
     x = data.x.to(device)
 
@@ -222,7 +233,14 @@ def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index):
     if args.pooling == "max":
         z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
         z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
-        link_logits = model.decode(z, all_edge_index)
+        if esm_reps_flag:
+            esm_representation = load_ESM_representations(data_dir, gene_mapping)
+            esm_representation = esm_representation.to(device)
+            z = torch.cat([z, esm_representation], dim=1)
+        if args.MLP_celline:
+            link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
+        else:
+            link_logits = model.decode(z, all_edge_index)
     elif args.pooling == "mean":
         z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
         z = F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
@@ -251,7 +269,7 @@ if __name__ == "__main__":
     # load data
     data, SL_data_train, SL_data_val, SL_data_test, SL_data_novel, gene_mapping = generate_torch_geo_data(args.data_dir, args.data_source, args.CCLE, args.CCLE_dim, args.node2vec_feats, 
                                     args.threshold, graph_input, args.node_feats, args.split_method, args.predict_novel_cellline, args.novel_cellline,  args.training_percent)
-
+    celline_feats = data.x
     num_features = data.x.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -261,6 +279,8 @@ if __name__ == "__main__":
 
     # load model
     if args.model == "GCN_pool":
+        if args.MLP_celline:
+            num_features = num_features + 16
         model = GCN_pool(num_features, args.out_channels, len(data.edge_index_list),esm_dim).to(device)
     elif args.model == 'GCN_conv':
         model = GCN_conv(num_features, args.out_channels, len(data.edge_index_list)).to(device)
@@ -287,20 +307,23 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(checkpoint_path))
         print("Predicting on novel the cell line...")
         data.edge_index_list
-        results = predict_oos(model, optimizer, data, device, novel_pos_edge_index, novel_neg_edge_index)
+        results = predict_oos(model, optimizer, data, device, novel_pos_edge_index, novel_neg_edge_index, celline_feats)
 
     else:
         train_losses = []
         valid_losses = []
         # initialize the early_stopping object
         early_stopping = EarlyStopping(patience=args.patience, verbose=True, reverse=True, path=checkpoint_path)
-
+        if args.MLP_celline:
+            with torch.no_grad():
+                MLP_output = model.cell_line_spec_mlp(celline_feats)
+                data.x = torch.cat((data.x, MLP_output), dim = 1)                      
         for epoch in range(1, args.epochs + 1):
             # in each epoch, using different negative samples
             train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
-            train_loss = train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, args.esm_reps_flag, args.data_dir)
+            train_loss = train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
             train_losses.append(train_loss)
-            val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index, args.esm_reps_flag, args.data_dir)
+            val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
             valid_losses.append(val_loss)
             print('Epoch: {:03d}, loss: {:.4f}, AUC: {:.4f}, AP: {:.4f}, val_loss: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(epoch, 
                                             train_loss, results['AUC'], results['AUPR'], val_loss, results['precision@5'],results['precision@10']))
@@ -315,7 +338,7 @@ if __name__ == "__main__":
         # load the last checkpoint with the best model
         model.load_state_dict(torch.load(checkpoint_path))
 
-        test_loss, results = test_model(model, optimizer, data, device, test_pos_edge_index, test_neg_edge_index)
+        test_loss, results = test_model(model, optimizer, data, device, test_pos_edge_index, test_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
     print("\ntest result:")
     print('AUC: {:.4f}, AP: {:.4f}, F1: {:.4f}, balance_acc: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], results['precision@5'], results['precision@10']))
     save_dict = {**vars(args), **results}

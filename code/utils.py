@@ -71,14 +71,13 @@ def load_ESM_representations(data_dir, gene_mapping):
 
     # Count the number of genes that were successfully mapped
     mapped_genes = 0
-    print()
 
     # Fill the mean representations tensor using the gene mapping
     for gene, gene_id in gene_mapping.items():
         if gene in mean_reps_dict:
             mean_reps[gene_id] = mean_reps_dict[gene]
             mapped_genes += 1
-    print(f"Mapped {mapped_genes} genes out of {len(gene_mapping)}")
+    #print(f"Mapped {mapped_genes} genes out of {len(gene_mapping)}")
 
     return mean_reps
 
@@ -86,6 +85,7 @@ def load_SL_data(data_dir, cell_name, threshold=-3):
     if cell_name != "synlethdb":
         print(cell_name)
         data = pd.read_csv("{}/CS177/{}.csv".format(data_dir, cell_name))
+        print(data.columns)
         # data['label'] = data['GI_scores'] <= threshold
         all_genes = list(set(np.unique(data['gene1'])) | set(np.unique(data['gene2'])))
     else:
@@ -120,7 +120,7 @@ def load_graph_data(data_dir, graph_type):
     #     data = data.concat(data, data_dup)
     if graph_type == 'PPI-genetic':
         # extract the first two columns
-        data = pd.read_csv(f"{data_dir}/filtered_genetic.csv").iloc[:,:2]
+        data = pd.read_csv(f"{data_dir}/filtered_genetic.csv")
         data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
         # sample ppi
         sampled_data = data.sample(n=25000, random_state=42)
@@ -130,7 +130,7 @@ def load_graph_data(data_dir, graph_type):
         sampled_data = pd.concat([sampled_data, data_dup])
         return sampled_data
     elif graph_type == 'PPI-physical':
-        data = pd.read_csv(f"{data_dir}/filtered_physical.csv").iloc[:,:2]
+        data = pd.read_csv(f"{data_dir}/filtered_physical.csv")
         data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
         # sample ppi
         sampled_data = data.sample(n=25000, random_state=42)
@@ -154,7 +154,7 @@ def load_graph_data(data_dir, graph_type):
         data = pd.concat([data, data_dup])
     elif graph_type == "random":
         data = pd.read_csv(f"{data_dir}/BIOGRID-9606.csv", index_col=0)
-        
+        print('random')
         data = data[data['Experimental System Type'] == 'physical']
         data = data[['Official Symbol Interactor A','Official Symbol Interactor B']]
         data.rename(columns={'Official Symbol Interactor A':'gene1', 'Official Symbol Interactor B':'gene2'}, inplace=True)
@@ -398,6 +398,18 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
             graph_data = graph_data[graph_data['label']==True]
             graph_data = graph_data[['gene1','gene2']]
         elif graph_type == "PPI-genetic":
+            graph_data = load_graph_data(data_dir, graph_type)
+            # removing edges already in the SL data
+            SL_pos = SL_data[SL_data['label'] == True]
+            SL_pos_list = sorted([tuple(r) for r in SL_pos[['gene1','gene2']].to_numpy()] + [tuple(r) for r in SL_pos[['gene2','gene1']].to_numpy()])
+            graph_list = [tuple(r) for r in graph_data[['gene1','gene2']].to_numpy()]
+            #print(graph_list)
+            left = list(set(graph_list) - set(SL_pos_list))
+            #print(left)
+            graph_data = pd.DataFrame(left, columns=['gene1','gene2'])
+            if cell_name != "synlethdb":
+                graph_data = graph_data[(graph_data["gene1"].isin(kept_genes))&(graph_data["gene2"].isin(kept_genes))]
+        elif graph_type == "PPI-physical":
             graph_data = load_graph_data(data_dir, graph_type)
             # removing edges already in the SL data
             SL_pos = SL_data[SL_data['label'] == True]
