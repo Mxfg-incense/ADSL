@@ -528,7 +528,7 @@ def generate_torch_edges(df, balanced_sample, duplicate, device, neg_num, use_SL
         else:
             df_neg = df[df['label'] == False].sample(n=df_pos.shape[0])
     else:
-        h = df_pos.shape[0] * neg_num
+        h = int(df_pos.shape[0] * neg_num)
         if use_SLscore:
             df_neg = df[df['label'] == False].head(h)
         else:        
