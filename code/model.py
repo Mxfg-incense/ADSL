@@ -87,7 +87,7 @@ class GCN_attention(torch.nn.Module):
         self.dropout = torch.nn.Dropout(0.5)
         self.transformer = transformer.Transformer(args)
         self.args=args
-
+        self.cell_line_spec_mlp = MLP(4)
 
     def encode(self, x, edge_index):
         x = self.conv1(x, edge_index).relu()

@@ -39,18 +39,18 @@ def init_argparse():
     parser.add_argument('--model', type=str, default="GCN_pool", help="model type")
     parser.add_argument('--pooling', type=str, default="max", help="type of pooling operations")
     parser.add_argument('--LR', type=float, default=0.0001, help="learning rate")
-    parser.add_argument('--epochs', type=int, default=5, help="number of maximum training epochs")
+    parser.add_argument('--epochs', type=int, default=100, help="number of maximum training epochs")
     parser.add_argument('--batch_size', type=int, default=512, help="batch size")
     parser.add_argument('--out_channels', type=int, default=64, help="dimension of output channels")
     parser.add_argument('--patience', type=int, default=150, help="patience in early stopping")
     parser.add_argument('--training_percent', type=float, default=0.70, help="proportion of the SL data as training set")
-    parser.add_argument('--esm_reps_flag', type=bool, default=True, help="whether or not include ESM representations into node features")
+    parser.add_argument('--esm_reps_flag', type=bool, default=False, help="whether or not include ESM representations into node features")
 
-    parser.add_argument('--save_results', type=int, default=0, help="whether to save test results into json")
+    parser.add_argument('--save_results', type=int, default=1, help="whether to save test results into json")
     parser.add_argument('--split_method', type=str, default="novel_pair", help="how to split data into train, val and test")
     parser.add_argument('--predict_novel_cellline', type=int, default=0, help="whether to predict on novel cell lines")
     parser.add_argument('--novel_cellline', type=str, default="Jurkat", help="name of novel celllines")
-    parser.add_argument('--MLP_celline', type=bool, default=True, help="use celline feats or not")
+    parser.add_argument('--MLP_celline', type=bool, default=False, help="use celline feats or not")
 
     parser.add_argument('--src_len', default=512, type=int, help='length of transformer dimention')
     parser.add_argument('--d_model', default=512, type=int, help='Embedding Size')
@@ -58,6 +58,9 @@ def init_argparse():
     parser.add_argument('--d_k', default=64, type=int, help='dimension of K(=Q), V')
     parser.add_argument('--n_layers', default=2, type=int, help='number of Encoder of Decoder Layer')
     parser.add_argument('--n_heads', default=4, type=int, help='number of heads in Multi-Head Attention')
+    
+    parser.add_argument('--use_SLscore', type=bool, default=False, help='if use SLscore to select samples')
+    parser.add_argument('--neg_num', type=float, default=1, help='number of negative samples is several times that of the positive samples')
 
     args = parser.parse_args()
 
@@ -137,6 +140,7 @@ def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_
             pos_weight = torch.tensor(1)
         else:
             pos_weight = torch.tensor(args.pos_weight)
+            
 
         batch_loss = F.binary_cross_entropy_with_logits(link_logits, link_labels, pos_weight=pos_weight)
         batch_loss.backward()
@@ -281,7 +285,7 @@ if __name__ == "__main__":
         sys.exit(0)
     # load data
     data, SL_data_train, SL_data_val, SL_data_test, SL_data_novel, gene_mapping = generate_torch_geo_data(args.data_dir, args.data_source, args.CCLE, args.CCLE_dim, args.node2vec_feats, 
-                                    args.threshold, graph_input, args.node_feats, args.split_method, args.predict_novel_cellline, args.novel_cellline,  args.training_percent)
+                                    args.threshold, graph_input, args.node_feats, args.split_method, args.predict_novel_cellline, args.novel_cellline,  args.training_percent, args.use_SLscore)
     celline_feats = data.x
     num_features = data.x.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -300,16 +304,18 @@ if __name__ == "__main__":
     elif args.model == 'GCN_multi':
         model = GCN_multi(num_features, args.out_channels, len(data.edge_index_list)).to(device)
     elif args.model == 'GCN_attention':
+        if args.MLP_celline:
+            num_features = num_features + 16
         model = GCN_attention(num_features, args.out_channels, len(data.edge_index_list), args).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.LR)
 
     # generate SL torch data
     #train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
-    val_pos_edge_index, val_neg_edge_index = generate_torch_edges(SL_data_val, True, False, device)
-    test_pos_edge_index, test_neg_edge_index = generate_torch_edges(SL_data_test, True, False, device)
+    val_pos_edge_index, val_neg_edge_index = generate_torch_edges(SL_data_val, True, False, device, 1, False)
+    test_pos_edge_index, test_neg_edge_index = generate_torch_edges(SL_data_test, True, False, device, 1, False)
     if args.predict_novel_cellline:
-        novel_pos_edge_index, novel_neg_edge_index = generate_torch_edges(SL_data_novel, True, False, device)
+        novel_pos_edge_index, novel_neg_edge_index = generate_torch_edges(SL_data_novel, True, False, device, 1, False)
 
     
     checkpoint_path = "../ckpt/{}_{}.pt".format(args.data_source,args.model)
@@ -326,7 +332,8 @@ if __name__ == "__main__":
         print("Predicting on novel the cell line...")
         data.edge_index_list
         results = predict_oos(model, optimizer, data, device, novel_pos_edge_index, novel_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
-
+        save_dict = {**vars(args), **results}
+        
     else:
         train_losses = []
         valid_losses = []
@@ -335,7 +342,7 @@ if __name__ == "__main__":
                      
         for epoch in range(1, args.epochs + 1):
             # in each epoch, using different negative samples
-            train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
+            train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device, args.neg_num, args.use_SLscore)
             train_loss = train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
             train_losses.append(train_loss)
             val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
@@ -359,5 +366,6 @@ if __name__ == "__main__":
     save_dict = {**vars(args), **results}
         
     if args.save_results:
-        with open("../results/MVGCN_{}_{}_{}.json".format(args.data_source, args.split_method, args.model,"w")) as f:
+        with open("/public/home/CS177/zhuoyan-cs177/ADSL/results/MVGCN_{}_{}_{}_{}_{}.json".format(args.data_source, args.model, args.pooling, args.MLP_celline, args.esm_reps_flag), "a") as f:
             json.dump(save_dict, f)
+            f.write('\n')
