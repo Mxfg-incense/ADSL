@@ -521,7 +521,7 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
 
 def generate_torch_edges(df, balanced_sample, duplicate, device, neg_num, use_SLscore):
     df_pos = df[df['label'] == True]
-    if balanced_sample == True:
+    if balanced_sample:
         # balanced sample
         if use_SLscore:
             df_neg = df[df['label'] == False].head(df_pos.shape[0])
