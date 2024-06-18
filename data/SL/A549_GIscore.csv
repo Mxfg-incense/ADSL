@@ -1,4 +1,4 @@
-gene_1,gene_2,cell_line_origin,horlbeck_score_SL_score,gene1_primekg_index,gene2_primekg_index,label,cell_id
+gene1,gene2,cell_line_origin,horlbeck_score_SL_score,gene1_primekg_index,gene2_primekg_index,label,cell_id
 ACACA,ACACB,A549,-1.17E-05,8065,9495,0,1
 AURKA,AURKB,A549,0.000725275,54,1814,0,1
 AURKA,AURKC,A549,0.000570458,54,6254,0,1

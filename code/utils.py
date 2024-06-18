@@ -84,7 +84,7 @@ def load_ESM_representations(data_dir, gene_mapping):
 def load_SL_data(data_dir, cell_name, threshold=-3):
     if cell_name != "synlethdb":
         print(cell_name)
-        data = pd.read_csv("{}/CS177/{}.csv".format(data_dir, cell_name))
+        data = pd.read_csv("{}/SL/{}_GIscore.csv".format(data_dir, cell_name))
         print(data.columns)
         # data['label'] = data['GI_scores'] <= threshold
         all_genes = list(set(np.unique(data['gene1'])) | set(np.unique(data['gene2'])))
@@ -98,61 +98,8 @@ def load_SL_data(data_dir, cell_name, threshold=-3):
         neg_df = generate_random_negative_samples(data, coeff=10)
         data = pd.concat([data, neg_df])
     return data, all_genes
-
-def load_SL_scoredata(data_dir, cell_name):
-    if cell_name != "synlethdb":
-        print(cell_name)
-        data = pd.read_csv("{}/SL_score/{}.csv".format(data_dir, cell_name))
-        print(data.columns)
-        # data['label'] = data['GI_scores'] <= threshold
-        all_genes = list(set(np.unique(data['gene1'])) | set(np.unique(data['gene2'])))
-    else:
-        data = pd.read_csv(f"{data_dir}/SynLethDB_SL.csv")
-        data.rename(columns={"gene_a.name":"gene1", "gene_b.name":"gene2"}, inplace=True)
-        data = data[["gene1","gene2"]]
-        data["label"] = 1
-        all_genes = list(set(np.unique(data['gene1'])) | set(np.unique(data['gene2'])))
-        # get sampled negative samples
-        neg_df = generate_random_negative_samples(data, coeff=10)
-        data = pd.concat([data, neg_df])
-    return data, all_genes
-
 
 def load_graph_data(data_dir, graph_type):
-    # if graph_type == 'PPI-genetic' or graph_type == 'PPI-physical':
-    #     data = pd.read_csv(f"{data_dir}/BIOGRID-9606.csv", index_col=0)
-    #     all_genes = set(data['Official Symbol Interactor A'].unique()) | set(data['Official Symbol Interactor B'].unique())
-        
-    #     if graph_type == 'PPI-physical':
-    #         data = data[data['Experimental System Type'] == 'physical']
-    #     else:
-    #         data = data[data['Experimental System Type'] != 'physical']
-    #     print("Number of edges of {}: {}".format(graph_type, data.shape[0]))
-
-    #     data = data[['Official Symbol Interactor A','Official Symbol Interactor B']]
-    #     data.rename(columns={'Official Symbol Interactor A':'gene1', 'Official Symbol Interactor B':'gene2'}, inplace=True)
-
-    #     # make it indirected graph
-    #     data_dup = data.reindex(columns=['gene2','gene1'])
-    #     data_dup.columns = ['gene1','gene2']
-    #     data = data.concat(data, data_dup)
-    
-    # if graph_type == 'PPI-genetic':
-    #     # extract the first two columns
-    #     data = pd.read_csv(f"{data_dir}/filtered_top_50000_genetic.txt")
-    #     data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
-    #     # make it indirected graph
-    #     data_dup = data.reindex(columns=['gene2','gene1'])
-    #     data_dup.columns = ['gene1','gene2']
-    #     data = data.append(data_dup)
-    # elif graph_type == 'PPI-physical':
-    #     data = pd.read_csv(f"{data_dir}/filtered_top_50000_physical.csv")
-    #     data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
-    #     data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
-    #     # make it indirected graph
-    #     data_dup = data.reindex(columns=['gene2','gene1'])
-    #     data_dup.columns = ['gene1','gene2']
-    #     data = data.append(data_dup)
     if graph_type == 'PPI-genetic':
         # extract the first two columns
         data = pd.read_csv(f"{data_dir}/filtered_genetic.csv")
@@ -361,7 +308,7 @@ def merge_and_mapping(SL_data, graph_data_list, SL_genes, SL_data_novel, SL_gene
     return SL_data, SL_data_novel ,graph_data_list, gene_mapping
 
     
-def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_dim, node2vec_feats_flag, threshold, graph_input, attr, split_method, predict_novel_flag, novel_cell_name, training_percent, use_SLscore):
+def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_dim, node2vec_feats_flag, threshold, graph_input, attr, split_method, predict_novel_flag, novel_cell_name, training_percent):
     """
     Generate torch geometric data for training a model.
 
@@ -387,12 +334,9 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
         gene_mapping (dict): The mapping of genes to indices.
     """
     # load data
-    if use_SLscore:
-        SL_data, SL_genes = load_SL_scoredata(data_dir, cell_name)
-        SL_data_novel, SL_gene_novel = load_SL_scoredata(data_dir, novel_cell_name)
-    else:
-        SL_data, SL_genes = load_SL_data(data_dir, cell_name, threshold)
-        SL_data_novel, SL_gene_novel = load_SL_data(data_dir, novel_cell_name, threshold)
+
+    SL_data, SL_genes = load_SL_data(data_dir, cell_name, threshold)
+    SL_data_novel, SL_gene_novel = load_SL_data(data_dir, novel_cell_name, threshold)
     
     # generate SL torch data, split into train, valid, test
     np.random.seed(5959)
@@ -424,15 +368,15 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
             if predict_novel_flag:
                 # use training part of SL data to construct input graph
                 if split_method == "novel_gene":
-                    graph_data = SL_data[(SL_data['gene1'].isin(training_genes))&(SL_data['gene2'].isin(training_genes))]
-                elif split_method == "novel_pair":
-                    graph_data = SL_data.iloc[all_idx[:int(len(all_idx)*training_percent)]]
-            else:
-                # use training part of SL data to construct input graph
-                if split_method == "novel_gene":
                     graph_data = SL_data_novel[(SL_data_novel['gene1'].isin(training_genes))&(SL_data_novel['gene2'].isin(training_genes))]
                 elif split_method == "novel_pair":
                     graph_data = SL_data_novel.iloc[all_idx[:int(len(all_idx)*training_percent)]]
+            else:
+                # use training part of SL data to construct input graph
+                if split_method == "novel_gene":
+                    graph_data = SL_data[(SL_data['gene1'].isin(training_genes))&(SL_data['gene2'].isin(training_genes))]
+                elif split_method == "novel_pair":
+                    graph_data = SL_data.iloc[all_idx[:int(len(all_idx)*training_percent)]]
             
             graph_data = graph_data[graph_data['label']==True]
             graph_data = graph_data[['gene1','gene2']]
@@ -519,11 +463,12 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
     return data, SL_data_train, SL_data_val, SL_data_test, SL_data_novel, gene_mapping
 
 
-def generate_torch_edges(df, balanced_sample, duplicate, device, neg_num, use_SLscore):
+def generate_torch_edges(df, balanced_sample, duplicate, device, neg_num):
     df_pos = df[df['label'] == True]
     if balanced_sample:
         # balanced sample
         df_neg = df[df['label'] == False].sample(n=df_pos.shape[0])
+        
     else:
         h = int(df_pos.shape[0] * neg_num)
 
