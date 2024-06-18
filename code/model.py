@@ -139,6 +139,10 @@ class SLMGAE(torch.nn.Module):
         self.weight_views = torch.ones(num_graph - 1)
         self.weight_views = torch.nn.Parameter(torch.nn.functional.softmax(self.weight_views, dim=0))
         
+        # transforer
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model=out_channels, nhead=8)
+        self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=2)
+
         out_channels_classifer = out_channels + esm_dim + mlp_dim
         self.fc1 = torch.nn.Linear(2*out_channels_classifer, out_channels_classifer)
         self.fc2 = torch.nn.Linear(out_channels_classifer, int(out_channels_classifer/2))
@@ -147,13 +151,27 @@ class SLMGAE(torch.nn.Module):
         self.dropout = torch.nn.Dropout(0.5)
         self.cell_line_spec_mlp = MLP(4)
 
+        if self.esm_dim != 0:
+            self.esm_representation = load_ESM_representations(self.data_dir, self.gene_mapping)
+    
+    def decode_transformer(self, z1, z2):
+        x = torch.cat((z1, z2), dim=1)
+        x = self.fc1(x).relu()
+        x = self.dropout(x)
+        x = self.fc2(x).relu()
+        x = self.dropout(x)
+        x = self.fc3(x).relu()
+        x = self.dropout(x)
+        x = self.fc4(x)
+        return torch.squeeze(x)
+
+
     def decode(self, z, edge_index):
         if self.mlp_dim != 0:
             MLP_output = self.cell_line_spec_mlp(self.celline_feats)
             z = torch.cat((z, MLP_output), dim = 1)
         if self.esm_dim != 0:
-            esm_representation = load_ESM_representations(self.data_dir, self.gene_mapping)
-            z = torch.cat([z, esm_representation], dim=1)
+            z = torch.cat([z, self.esm_representation], dim=1)
         x = torch.cat((z[edge_index[0]],z[edge_index[1]]),dim=1)
         x = self.fc1(x).relu()
         x = self.dropout(x)
