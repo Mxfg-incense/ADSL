@@ -523,16 +523,11 @@ def generate_torch_edges(df, balanced_sample, duplicate, device, neg_num, use_SL
     df_pos = df[df['label'] == True]
     if balanced_sample:
         # balanced sample
-        if use_SLscore:
-            df_neg = df[df['label'] == False].head(df_pos.shape[0])
-        else:
-            df_neg = df[df['label'] == False].sample(n=df_pos.shape[0])
+        df_neg = df[df['label'] == False].sample(n=df_pos.shape[0])
     else:
         h = int(df_pos.shape[0] * neg_num)
-        if use_SLscore:
-            df_neg = df[df['label'] == False].head(h)
-        else:        
-            df_neg = df[df['label'] == False].sample(n=h)
+
+        df_neg = df[df['label'] == False].sample(n=h)
     
     #pos_edge_idx = torch.tensor([df_pos['gene1'].values, df_pos['gene2'].values], dtype=torch.long, device=device)
     #neg_edge_idx = torch.tensor([df_neg['gene1'].values, df_neg['gene2'].values], dtype=torch.long, device=device)

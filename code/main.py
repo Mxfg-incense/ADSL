@@ -39,7 +39,7 @@ def init_argparse():
     parser.add_argument('--model', type=str, default="GCN_pool", help="model type")
     parser.add_argument('--pooling', type=str, default="max", help="type of pooling operations")
     parser.add_argument('--LR', type=float, default=0.0001, help="learning rate")
-    parser.add_argument('--epochs', type=int, default=100, help="number of maximum training epochs")
+    parser.add_argument('--epochs', type=int, default=200, help="number of maximum training epochs")
     parser.add_argument('--batch_size', type=int, default=512, help="batch size")
     parser.add_argument('--out_channels', type=int, default=64, help="dimension of output channels")
     parser.add_argument('--patience', type=int, default=150, help="patience in early stopping")
@@ -59,7 +59,7 @@ def init_argparse():
     parser.add_argument('--n_layers', default=2, type=int, help='number of Encoder of Decoder Layer')
     parser.add_argument('--n_heads', default=4, type=int, help='number of heads in Multi-Head Attention')
     
-    parser.add_argument('--use_SLscore', type=bool, default=False, help='if use SLscore to select samples')
+    parser.add_argument('--use_SLscore', type=bool, default=True, help='if use SLscore to select samples')
     parser.add_argument('--neg_num', type=float, default=1, help='number of negative samples is several times that of the positive samples')
 
     args = parser.parse_args()
@@ -100,11 +100,12 @@ def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_
         for i, node_index in enumerate(this_batch_node_index):
             this_batch_node_index_map[node_index.item()] = i
 
-        if args.pooling == "max":
+        if args.pooling == "max" or "mean":
         # transpose is used to transform the data from (batch, # graphs, # features) into (batch, # features, # graphs)
         # the pooling operation is performed on the third dimension (graphs)
             z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1).transpose(1,2)
-            z = F.max_pool2d(z, (1,len(edge_index_list))).squeeze(2)
+            z = F.max_pool2d(z, (1,len(edge_index_list))).squeeze(2) if args.pooling == "max" \
+                    else F.avg_pool2d(z, (1,len(edge_index_list))).squeeze(2)
             if esm_reps_flag:
                 esm_representation = load_ESM_representations(data_dir,gene_mapping)
                 esm_representation = esm_representation.to(device)
@@ -113,16 +114,7 @@ def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_
                 link_logits = model.MLP_decode(z, celline_feats, this_batch_edge_index)
             else:
                 link_logits = model.decode(z, this_batch_edge_index)
-        elif args.pooling == "mean":
-            z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1).transpose(1,2)
-            z = F.avg_pool2d(z, (1,len(edge_index_list))).squeeze(2)
-            if esm_reps_flag:
-                esm_representation = load_ESM_representations(data_dir,gene_mapping)
-                z = torch.cat([z, esm_representation], dim=1)
-            if args.MLP_celline:
-                link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
-            else:
-                link_logits = model.decode(z, all_edge_index)
+
         elif args.pooling == "attention":
             # z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1)
             transformer_output = model.modified_transformer(z[this_batch_node_index])
@@ -173,9 +165,10 @@ def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, e
     
     z = torch.cat(temp_z_list,1)
     
-    if args.pooling == "max":
+    if args.pooling == "max" or "mean":
         z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
-        z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
+        z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2) if args.pooling == "max" \
+                else F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
         if esm_reps_flag:
             esm_representation = load_ESM_representations(data_dir, gene_mapping)
             esm_representation = esm_representation.to(device)
@@ -184,16 +177,7 @@ def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, e
             link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
         else:
             link_logits = model.decode(z, all_edge_index)
-    elif args.pooling == "mean":
-        z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
-        z = F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
-        if esm_reps_flag:
-                esm_representation = load_ESM_representations(data_dir,gene_mapping)
-                z = torch.cat([z, esm_representation], dim=1)
-        if args.MLP_celline:
-            link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
-        else:
-            link_logits = model.decode(z, all_edge_index)
+
     elif args.pooling == "attention":
         transformer_output = model.modified_transformer(z[all_node_index])
         z = torch.cat((transformer_output[
@@ -240,9 +224,10 @@ def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index, 
     
     z = torch.cat(temp_z_list,1)
 
-    if args.pooling == "max":
+    if args.pooling == "max" or "mean":
         z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
-        z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
+        z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2) if args.pooling == "max" \
+                else F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
         if esm_reps_flag:
             esm_representation = load_ESM_representations(data_dir, gene_mapping)
             esm_representation = esm_representation.to(device)
@@ -251,17 +236,7 @@ def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index, 
             link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
         else:
             link_logits = model.decode(z, all_edge_index)
-    elif args.pooling == "mean":
-        z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
-        z = F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
-        if esm_reps_flag:
-            esm_representation = load_ESM_representations(data_dir, gene_mapping)
-            esm_representation = esm_representation.to(device)
-            z = torch.cat([z, esm_representation], dim=1)
-        if args.MLP_celline:
-            link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
-        else:
-            link_logits = model.decode(z, all_edge_index)
+            
     elif args.pooling == "attention":
         transformer_output = model.modified_transformer(z[all_node_index])
         z = torch.cat((transformer_output[
@@ -347,8 +322,8 @@ if __name__ == "__main__":
             train_losses.append(train_loss)
             val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
             valid_losses.append(val_loss)
-            print('Epoch: {:03d}, loss: {:.4f}, AUC: {:.4f}, AP: {:.4f}, val_loss: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(epoch, 
-                                            train_loss, results['AUC'], results['AUPR'], val_loss, results['precision@5'],results['precision@10']))
+            print('Epoch: {:03d}, loss: {:.4f}, AUC: {:.4f}, AP: {:.4f},  F1: {:.4f}, balance_acc: {:.4f}, val_loss: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(epoch, 
+                                            train_loss, results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], val_loss, results['precision@5'],results['precision@10']))
             
             #early_stopping(results['aupr'], model)
             early_stopping(val_loss, model)
@@ -366,6 +341,6 @@ if __name__ == "__main__":
     save_dict = {**vars(args), **results}
         
     if args.save_results:
-        with open("/public/home/CS177/zhuoyan-cs177/ADSL/results/MVGCN_{}_{}_{}_{}_{}.json".format(args.data_source, args.model, args.pooling, args.MLP_celline, args.esm_reps_flag), "a") as f:
+        with open("../results/MVGCN_{}_{}_{}_{}_{}.json".format(args.data_source, args.model, args.pooling, args.MLP_celline, args.esm_reps_flag), "a") as f:
             json.dump(save_dict, f)
             f.write('\n')
