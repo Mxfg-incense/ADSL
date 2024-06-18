@@ -8,6 +8,7 @@ from torch_geometric.nn import GATConv, GATv2Conv
 from torch_geometric.nn import ResGatedGraphConv, TransformerConv
 import transformer
 import torch.nn as nn
+from utils import load_ESM_representations
 
 class MLP(nn.Module):
     def __init__(self, input_size):
@@ -122,21 +123,34 @@ class GCN_attention(torch.nn.Module):
         return torch.squeeze(x)
 
 class SLMGAE(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, num_graph, esm_dim):
+    def __init__(self, in_channels, out_channels, num_graph, esm_dim, mlp_dim, data_dir, gene_mapping, celline_feats):
         super(SLMGAE, self).__init__()
         # number of GCN
         self.num_graph = num_graph
+        self.esm_dim = esm_dim
+        self.mlp_dim = mlp_dim
+        self.data_dir = data_dir
+        self.gene_mapping = gene_mapping
+        self.celline_feats = celline_feats
         self.GCNs = torch.nn.ModuleList()
         for _ in range(num_graph):
-            self.GCNs.append(GCN(in_channels, out_channels, num_graph, esm_dim))
+            self.GCNs.append(GCN(in_channels, out_channels))
 
-        self.fc1 = torch.nn.Linear(2*(out_channels + esm_dim), out_channels)
-        self.fc2 = torch.nn.Linear(out_channels, int(out_channels/2))
-        self.fc3 = torch.nn.Linear(int(out_channels/2), int(out_channels/4))
-        self.fc4 = torch.nn.Linear(int(out_channels/4), 1)
+        out_channels_classifer = out_channels + esm_dim + mlp_dim
+        self.fc1 = torch.nn.Linear(2*out_channels_classifer, out_channels_classifer)
+        self.fc2 = torch.nn.Linear(out_channels_classifer, int(out_channels_classifer/2))
+        self.fc3 = torch.nn.Linear(int(out_channels_classifer/2), int(out_channels_classifer/4))
+        self.fc4 = torch.nn.Linear(int(out_channels_classifer/4), 1)
         self.dropout = torch.nn.Dropout(0.5)
+        self.cell_line_spec_mlp = MLP(4)
 
     def decode(self, z, edge_index):
+        if self.mlp_dim != 0:
+            MLP_output = self.cell_line_spec_mlp(self.celline_feats)
+            z = torch.cat((z, MLP_output), dim = 1)
+        if self.esm_dim != 0:
+            esm_representation = load_ESM_representations(self.data_dir, self.gene_mapping)
+            z = torch.cat([z, esm_representation], dim=1)
         x = torch.cat((z[edge_index[0]],z[edge_index[1]]),dim=1)
         x = self.fc1(x).relu()
         x = self.dropout(x)
@@ -148,17 +162,15 @@ class SLMGAE(torch.nn.Module):
         return torch.squeeze(x)
 
 class GCN(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, num_graph, esm_dim):
+    def __init__(self, in_channels, out_channels):
         super(GCN, self).__init__()
-        self.num_graph = num_graph
         self.conv1 = GCNConv(in_channels, 2*out_channels)
         self.conv2 = GCNConv(2*out_channels, out_channels)
-        self.fc1 = torch.nn.Linear(2*(out_channels + esm_dim), out_channels)
+        self.fc1 = torch.nn.Linear(2*(out_channels), out_channels)
         self.fc2 = torch.nn.Linear(out_channels, int(out_channels/2))
         self.fc3 = torch.nn.Linear(int(out_channels/2), int(out_channels/4))
         self.fc4 = torch.nn.Linear(int(out_channels/4), 1)
         self.dropout = torch.nn.Dropout(0.5)
-        self.cell_line_spec_mlp = MLP(4)
 
     def encode(self, x, edge_index):
         x = self.conv1(x, edge_index).relu()
@@ -166,19 +178,6 @@ class GCN(torch.nn.Module):
         return x
 
     def decode(self, z, edge_index):
-        x = torch.cat((z[edge_index[0]],z[edge_index[1]]),dim=1)
-        x = self.fc1(x).relu()
-        x = self.dropout(x)
-        x = self.fc2(x).relu()
-        x = self.dropout(x)
-        x = self.fc3(x).relu()
-        x = self.dropout(x)
-        x = self.fc4(x)
-        return torch.squeeze(x)
-
-    def MLP_decode(self, z, other, edge_index):
-        MLP_output = self.cell_line_spec_mlp(other)
-        x = torch.cat((z, MLP_output), dim = 1)
         x = torch.cat((z[edge_index[0]],z[edge_index[1]]),dim=1)
         x = self.fc1(x).relu()
         x = self.dropout(x)

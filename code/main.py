@@ -30,7 +30,7 @@ def init_argparse():
                     default=['PPI-genetic','PPI-physical','co-exp','co-ess'], help="lists of cell-independent graphs to use.")
     parser.add_argument('--node_feats', type=str, default="raw_omics", help="gene node features")
 
-    parser.add_argument('--balanced', type=bool, default=False, help="whether the negative and positive samples are balanced")
+    parser.add_argument('--balanced', type=int, default=1, help="whether the negative and positive samples are balanced")
     parser.add_argument('--pos_weight', type=float, default=50, help="weight for positive samples in loss function")
     parser.add_argument('--CCLE', type=int, default=0, help="whether or not include CCLE features into node features")
     parser.add_argument('--CCLE_dim', type=int, default=64, help="dimension of embeddings for each type of CCLE omics data")
@@ -44,13 +44,13 @@ def init_argparse():
     parser.add_argument('--out_channels', type=int, default=64, help="dimension of output channels")
     parser.add_argument('--patience', type=int, default=150, help="patience in early stopping")
     parser.add_argument('--training_percent', type=float, default=0.70, help="proportion of the SL data as training set")
-    parser.add_argument('--esm_reps_flag', type=bool, default=False, help="whether or not include ESM representations into node features")
+    parser.add_argument('--esm_reps_flag', type=int, default=0, help="whether or not include ESM representations into node features")
 
     parser.add_argument('--save_results', type=int, default=1, help="whether to save test results into json")
     parser.add_argument('--split_method', type=str, default="novel_pair", help="how to split data into train, val and test")
     parser.add_argument('--predict_novel_cellline', type=int, default=0, help="whether to predict on novel cell lines")
     parser.add_argument('--novel_cellline', type=str, default="Jurkat", help="name of novel celllines")
-    parser.add_argument('--MLP_celline', type=bool, default=False, help="use celline feats or not")
+    parser.add_argument('--MLP_celline', type=int, default=0, help="use celline feats or not")
 
     parser.add_argument('--src_len', default=512, type=int, help='length of transformer dimention')
     parser.add_argument('--d_model', default=512, type=int, help='Embedding Size')
@@ -66,7 +66,7 @@ def init_argparse():
     return args
 
 
-def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, support_views_edge_index, device, train_pos_edge_index, train_neg_edge_index, esm_reps_flag, data_dir, celline_feats):
+def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, support_views_edge_index, device, train_pos_edge_index, train_neg_edge_index):
     model.train()
     optimizer.zero_grad()
 
@@ -109,15 +109,14 @@ def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, su
         
         z = torch.cat(views_z,1)
         
+        # z(batch_size, num_views * numfeatures) -> z(batch_size, num_views, numfeatures) -> z(batch_size, numfeatures, num_views)
+        z = z.unsqueeze(1).reshape(z.shape[0], model.num_graph, -1).transpose(1,2)
+        z = F.max_pool2d(z, (1,model.num_graph)).squeeze(2) if args.pooling == "max" \
+                else F.avg_pool2d(z, (1,model.num_graph)).squeeze(2)
 
-        if args.pooling == "max" or "mean":
-            # z(batch_size, num_views * numfeatures) -> z(batch_size, num_views, numfeatures) -> z(batch_size, numfeatures, num_views)
-            z = z.unsqueeze(1).reshape(z.shape[0], model.num_graph, -1).transpose(1,2)
-            z = F.max_pool2d(z, (1,model.num_graph)).squeeze(2) if args.pooling == "max" \
-                    else F.avg_pool2d(z, (1,model.num_graph)).squeeze(2)
+        link_logits = model.decode(z, this_batch_edge_index)
             
-            link_logits = model.decode(z, this_batch_edge_index)
-            batch_loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[0], pos_weight=pos_weight)
+        batch_loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[0], pos_weight=pos_weight)
 
         batch_loss.backward()
         optimizer.step()
@@ -129,7 +128,7 @@ def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, su
 
 
 @torch.no_grad()
-def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, pos_edge_index, neg_edge_index, esm_reps_flag,data_dir, celline_feats):
+def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, pos_edge_index, neg_edge_index):
     model.eval()
     results = {}
     loss = 0
@@ -156,13 +155,13 @@ def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_ind
     
     z = torch.cat(views_z,1)
     
-    if args.pooling == "max" or "mean":
-        z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
-        z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2) if args.pooling == "max" \
-                else F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
-        
-        link_logits = model.decode(z, all_edge_index)
-        loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[0], pos_weight=pos_weight)
+    z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
+    z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2) if args.pooling == "max" \
+            else F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
+
+    link_logits = model.decode(z, all_edge_index)
+    
+    loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[0], pos_weight=pos_weight)
     
     link_probs = link_logits.sigmoid()
 
@@ -237,14 +236,17 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     esm_dim = 0
+    mlp_dim = 0
     if args.esm_reps_flag:
         esm_dim =1280
+    if args.MLP_celline:
+        mlp_dim = 16
 
     # load model
     if args.model == "GCN_pool":
         if args.MLP_celline:
             num_features = num_features + 16
-        model = SLMGAE(num_features, args.out_channels, len(data.edge_index_list),esm_dim).to(device)
+        model = SLMGAE(num_features, args.out_channels, len(data.edge_index_list),esm_dim, mlp_dim, args.data_dir, gene_mapping, celline_feats).to(device)
     elif args.model == 'GCN_attention':
         if args.MLP_celline:
             num_features = num_features + 16
@@ -273,7 +275,7 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(checkpoint_path))
         print("Predicting on novel the cell line...")
         data.edge_index_list
-        results = predict_oos(model, optimizer, data, device, novel_pos_edge_index, novel_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
+        results = predict_oos(model, optimizer, data, device, novel_pos_edge_index, novel_neg_edge_index)
         save_dict = {**vars(args), **results}
         
     else:
@@ -287,9 +289,9 @@ if __name__ == "__main__":
         for epoch in range(1, args.epochs + 1):
             # in each epoch, using different negative samples
             train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device, args.neg_num)
-            train_loss = train_model(model, optimizer, node_embedding, SL_data_edge_index, support_views_edge_index, device, train_pos_edge_index, train_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
+            train_loss = train_model(model, optimizer, node_embedding, SL_data_edge_index, support_views_edge_index, device, train_pos_edge_index, train_neg_edge_index)
             train_losses.append(train_loss)
-            val_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, val_pos_edge_index, val_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
+            val_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, val_pos_edge_index, val_neg_edge_index)
             valid_losses.append(val_loss)
             print('Epoch: {:03d}, loss: {:.4f}, AUC: {:.4f}, AP: {:.4f},  F1: {:.4f}, balance_acc: {:.4f}, val_loss: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(epoch, 
                                             train_loss, results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], val_loss, results['precision@5'],results['precision@10']))
@@ -304,7 +306,7 @@ if __name__ == "__main__":
         # load the last checkpoint with the best model
         model.load_state_dict(torch.load(checkpoint_path))
 
-        test_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, test_pos_edge_index, test_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
+        test_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, test_pos_edge_index, test_neg_edge_index)
     print("\ntest result:")
     print('AUC: {:.4f}, AP: {:.4f}, F1: {:.4f}, balance_acc: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], results['precision@5'], results['precision@10']))
     save_dict = {**vars(args), **results}
