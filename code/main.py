@@ -66,74 +66,59 @@ def init_argparse():
     return args
 
 
-def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, esm_reps_flag, data_dir, celline_feats):
+def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, support_views_edge_index, device, train_pos_edge_index, train_neg_edge_index, esm_reps_flag, data_dir, celline_feats):
     model.train()
     optimizer.zero_grad()
-    x = data.x.to(device)
-    edge_index_list = []
-    for edge_index in data.edge_index_list:
-        edge_index = edge_index.to(device)
-        edge_index_list.append(edge_index)
-    # shuffle training edges and labels
+
     all_edge_index = torch.cat([train_pos_edge_index, train_neg_edge_index], dim=-1)
-    labels = get_link_labels(train_pos_edge_index, train_neg_edge_index, device)
+    labels = get_link_labels(train_pos_edge_index, train_neg_edge_index, support_views_edge_index, device)
+    # shuffle training edges and labels
+    #lable shape: (num_views+1, num_edges), shuffle the second dimension
     num_samples = all_edge_index.shape[1]
-    all_idx = list(range(num_samples))
-    np.random.shuffle(all_idx)
-    all_edge_index = all_edge_index[:,all_idx]
-    labels = labels[all_idx]
+    perm = torch.randperm(num_samples)
+    all_edge_index = all_edge_index[:, perm]
+    labels = labels[:, perm]
 
     start = 0
     loss = 0
     while start < num_samples:
-        temp_z_list = []
-        for edge_index in edge_index_list:
-            temp_z = model.encode(x, edge_index)
-            temp_z_list.append(temp_z)
-        
-        z = torch.cat(temp_z_list,1)
-        
+        batch_loss = 0
+        link_labels = labels[:, start:(start + args.batch_size)]
         this_batch_edge_index = all_edge_index[:, start:(start + args.batch_size)]
         this_batch_node_index = torch.cat((this_batch_edge_index[0], this_batch_edge_index[1])).unique()
         this_batch_node_index_map = {}  # 用来预测的边的位置进行标记
         for i, node_index in enumerate(this_batch_node_index):
             this_batch_node_index_map[node_index.item()] = i
 
-        if args.pooling == "max" or "mean":
-        # transpose is used to transform the data from (batch, # graphs, # features) into (batch, # features, # graphs)
-        # the pooling operation is performed on the third dimension (graphs)
-            z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1).transpose(1,2)
-            z = F.max_pool2d(z, (1,len(edge_index_list))).squeeze(2) if args.pooling == "max" \
-                    else F.avg_pool2d(z, (1,len(edge_index_list))).squeeze(2)
-            if esm_reps_flag:
-                esm_representation = load_ESM_representations(data_dir,gene_mapping)
-                esm_representation = esm_representation.to(device)
-                z = torch.cat([z, esm_representation], dim=1)
-            if args.MLP_celline:
-                link_logits = model.MLP_decode(z, celline_feats, this_batch_edge_index)
-            else:
-                link_logits = model.decode(z, this_batch_edge_index)
-
-        elif args.pooling == "attention":
-            # z = z.unsqueeze(1).reshape(z.shape[0],len(edge_index_list),-1)
-            transformer_output = model.modified_transformer(z[this_batch_node_index])
-            z = torch.cat((transformer_output[
-                                       [this_batch_node_index_map[i.item()] for i in this_batch_edge_index[0]]],
-                                   transformer_output[
-                                       [this_batch_node_index_map[i.item()] for i in this_batch_edge_index[1]]]), dim=1)
-            link_logits = model.decode(z)
-        
-
-        #link_probs = link_logits.sigmoid()
-        link_labels = labels[start:(start+args.batch_size)]
-
         if args.balanced:
             pos_weight = torch.tensor(1)
         else:
             pos_weight = torch.tensor(args.pos_weight)
-            
 
-        batch_loss = F.binary_cross_entropy_with_logits(link_logits, link_labels, pos_weight=pos_weight)
+        views_z = []
+        SL_z = model.GCNs[0].encode(node_embedding, SL_data_edge_index)
+        views_z.append(SL_z) 
+        link_logits_SL = model.GCNs[0].decode(SL_z, this_batch_edge_index)
+        batch_loss += F.binary_cross_entropy_with_logits(link_logits_SL, link_labels[0], pos_weight=pos_weight)
+
+        for i, edge_index in enumerate(support_views_edge_index):
+            z = model.GCNs[i+1].encode(node_embedding, edge_index)
+            views_z.append(z)
+            link_logits = model.GCNs[i+1].decode(z, this_batch_edge_index)
+            batch_loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[i+1], pos_weight=pos_weight)
+        
+        z = torch.cat(views_z,1)
+        
+
+        if args.pooling == "max" or "mean":
+            # z(batch_size, num_views * numfeatures) -> z(batch_size, num_views, numfeatures) -> z(batch_size, numfeatures, num_views)
+            z = z.unsqueeze(1).reshape(z.shape[0], model.num_graph, -1).transpose(1,2)
+            z = F.max_pool2d(z, (1,model.num_graph)).squeeze(2) if args.pooling == "max" \
+                    else F.avg_pool2d(z, (1,model.num_graph)).squeeze(2)
+            
+            link_logits = model.decode(z, this_batch_edge_index)
+            batch_loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[0], pos_weight=pos_weight)
+
         batch_loss.backward()
         optimizer.step()
 
@@ -144,57 +129,44 @@ def train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_
 
 
 @torch.no_grad()
-def test_model(model, optimizer, data, device, pos_edge_index, neg_edge_index, esm_reps_flag,data_dir, celline_feats):
+def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, pos_edge_index, neg_edge_index, esm_reps_flag,data_dir, celline_feats):
     model.eval()
     results = {}
-    x = data.x.to(device)
+    loss = 0
 
     all_edge_index = torch.cat([pos_edge_index, neg_edge_index], dim=-1)
-    all_node_index = torch.cat((all_edge_index[0], all_edge_index[1])).unique()
-    all_node_index_map = {}  # 用来预测的边的位置进行标记
-    for i, node_index in enumerate(all_node_index):
-            all_node_index_map[node_index.item()] = i
-    link_labels = get_link_labels(pos_edge_index, neg_edge_index, device)
 
-    temp_z_list = []
-    for i, edge_index in enumerate(data.edge_index_list):
-        edge_index = edge_index.to(device)
-        temp_z = model.encode(x, edge_index)
-        temp_z_list.append(temp_z)
+    link_labels = get_link_labels(pos_edge_index, neg_edge_index, support_views_edge_index, device)
+    if args.balanced:
+        pos_weight = torch.tensor(1)
+    else:
+        pos_weight = torch.tensor(args.pos_weight)
+
+    views_z = []
+    SL_z = model.GCNs[0].encode(node_embedding, SL_data_edge_index)
+    views_z.append(SL_z) 
+    link_logits_SL = model.GCNs[0].decode(SL_z, all_edge_index)
+    loss += F.binary_cross_entropy_with_logits(link_logits_SL, link_labels[0], pos_weight=pos_weight)
+
+    for i, edge_index in enumerate(support_views_edge_index):
+        z = model.GCNs[i+1].encode(node_embedding, edge_index)
+        views_z.append(z)
+        link_logits = model.GCNs[i+1].decode(z, all_edge_index)
+        loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[i+1], pos_weight=pos_weight)
     
-    z = torch.cat(temp_z_list,1)
+    z = torch.cat(views_z,1)
     
     if args.pooling == "max" or "mean":
         z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
         z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2) if args.pooling == "max" \
                 else F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
-        if esm_reps_flag:
-            esm_representation = load_ESM_representations(data_dir, gene_mapping)
-            esm_representation = esm_representation.to(device)
-            z = torch.cat([z, esm_representation], dim=1)
-        if args.MLP_celline:
-            link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
-        else:
-            link_logits = model.decode(z, all_edge_index)
-
-    elif args.pooling == "attention":
-        transformer_output = model.modified_transformer(z[all_node_index])
-        z = torch.cat((transformer_output[
-                                   [all_node_index_map[i.item()] for i in all_edge_index[0]]],
-                               transformer_output[
-                                   [all_node_index_map[i.item()] for i in all_edge_index[1]]]), dim=1)
-        link_logits = model.decode(z)
-
+        
+        link_logits = model.decode(z, all_edge_index)
+        loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[0], pos_weight=pos_weight)
     
     link_probs = link_logits.sigmoid()
 
-    if args.balanced:
-        pos_weight = torch.tensor(1)
-    else:
-        pos_weight = torch.tensor(args.pos_weight)
-    loss = F.binary_cross_entropy_with_logits(link_logits, link_labels, pos_weight=pos_weight)
-
-    results = evaluate_performance(link_labels.cpu().numpy(), link_probs.cpu().numpy())
+    results = evaluate_performance(link_labels[0].cpu().numpy(), link_probs.cpu().numpy())
 
     return float(loss), results
 
@@ -235,7 +207,7 @@ def predict_oos(model, optimizer, data, device, pos_edge_index, neg_edge_index, 
             link_logits = model.MLP_decode(z, celline_feats, all_edge_index)
         else:
             link_logits = model.decode(z, all_edge_index)
-            
+
     elif args.pooling == "attention":
         transformer_output = model.modified_transformer(z[all_node_index])
         z = torch.cat((transformer_output[
@@ -272,11 +244,7 @@ if __name__ == "__main__":
     if args.model == "GCN_pool":
         if args.MLP_celline:
             num_features = num_features + 16
-        model = GCN_pool(num_features, args.out_channels, len(data.edge_index_list),esm_dim).to(device)
-    elif args.model == 'GCN_conv':
-        model = GCN_conv(num_features, args.out_channels, len(data.edge_index_list)).to(device)
-    elif args.model == 'GCN_multi':
-        model = GCN_multi(num_features, args.out_channels, len(data.edge_index_list)).to(device)
+        model = SLMGAE(num_features, args.out_channels, len(data.edge_index_list),esm_dim).to(device)
     elif args.model == 'GCN_attention':
         if args.MLP_celline:
             num_features = num_features + 16
@@ -313,13 +281,15 @@ if __name__ == "__main__":
         valid_losses = []
         # initialize the early_stopping object
         early_stopping = EarlyStopping(patience=args.patience, verbose=True, reverse=True, path=checkpoint_path)
-                     
+        node_embedding = data.x.to(device)
+        SL_data_edge_index = data.edge_index_list[0].to(device)
+        support_views_edge_index = [edge_index.to(device) for edge_index in data.edge_index_list[1:]]
         for epoch in range(1, args.epochs + 1):
             # in each epoch, using different negative samples
             train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device, args.neg_num)
-            train_loss = train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
+            train_loss = train_model(model, optimizer, node_embedding, SL_data_edge_index, support_views_edge_index, device, train_pos_edge_index, train_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
             train_losses.append(train_loss)
-            val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
+            val_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, val_pos_edge_index, val_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
             valid_losses.append(val_loss)
             print('Epoch: {:03d}, loss: {:.4f}, AUC: {:.4f}, AP: {:.4f},  F1: {:.4f}, balance_acc: {:.4f}, val_loss: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(epoch, 
                                             train_loss, results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], val_loss, results['precision@5'],results['precision@10']))
@@ -334,7 +304,7 @@ if __name__ == "__main__":
         # load the last checkpoint with the best model
         model.load_state_dict(torch.load(checkpoint_path))
 
-        test_loss, results = test_model(model, optimizer, data, device, test_pos_edge_index, test_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
+        test_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, test_pos_edge_index, test_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
     print("\ntest result:")
     print('AUC: {:.4f}, AP: {:.4f}, F1: {:.4f}, balance_acc: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], results['precision@5'], results['precision@10']))
     save_dict = {**vars(args), **results}

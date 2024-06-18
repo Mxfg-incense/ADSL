@@ -121,10 +121,35 @@ class GCN_attention(torch.nn.Module):
         x = self.fc4(x)
         return torch.squeeze(x)
 
-
-class GCN_pool(torch.nn.Module):
+class SLMGAE(torch.nn.Module):
     def __init__(self, in_channels, out_channels, num_graph, esm_dim):
-        super(GCN_pool, self).__init__()
+        super(SLMGAE, self).__init__()
+        # number of GCN
+        self.num_graph = num_graph
+        self.GCNs = torch.nn.ModuleList()
+        for _ in range(num_graph):
+            self.GCNs.append(GCN(in_channels, out_channels, num_graph, esm_dim))
+
+        self.fc1 = torch.nn.Linear(2*(out_channels + esm_dim), out_channels)
+        self.fc2 = torch.nn.Linear(out_channels, int(out_channels/2))
+        self.fc3 = torch.nn.Linear(int(out_channels/2), int(out_channels/4))
+        self.fc4 = torch.nn.Linear(int(out_channels/4), 1)
+        self.dropout = torch.nn.Dropout(0.5)
+
+    def decode(self, z, edge_index):
+        x = torch.cat((z[edge_index[0]],z[edge_index[1]]),dim=1)
+        x = self.fc1(x).relu()
+        x = self.dropout(x)
+        x = self.fc2(x).relu()
+        x = self.dropout(x)
+        x = self.fc3(x).relu()
+        x = self.dropout(x)
+        x = self.fc4(x)
+        return torch.squeeze(x)
+
+class GCN(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, num_graph, esm_dim):
+        super(GCN, self).__init__()
         self.num_graph = num_graph
         self.conv1 = GCNConv(in_channels, 2*out_channels)
         self.conv2 = GCNConv(2*out_channels, out_channels)

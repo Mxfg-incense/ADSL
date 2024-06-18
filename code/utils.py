@@ -105,7 +105,7 @@ def load_graph_data(data_dir, graph_type):
         data = pd.read_csv(f"{data_dir}/filtered_genetic.csv")
         data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
         # sample ppi
-        sampled_data = data.sample(n=25000, random_state=42)
+        sampled_data = data.sample(n=20000, random_state=42)
         # make it indirected graph
         data_dup = sampled_data.reindex(columns=['gene2','gene1'])
         data_dup.columns = ['gene1','gene2']
@@ -115,7 +115,7 @@ def load_graph_data(data_dir, graph_type):
         data = pd.read_csv(f"{data_dir}/filtered_physical.csv")
         data.rename(columns={"protein1":"gene1", "protein2":"gene2"}, inplace=True)
         # sample ppi
-        sampled_data = data.sample(n=25000, random_state=42)
+        sampled_data = data.sample(n=20000, random_state=42)
         # make it indirected graph
         data_dup = sampled_data.reindex(columns=['gene2','gene1'])
         data_dup.columns = ['gene1','gene2']
@@ -127,13 +127,18 @@ def load_graph_data(data_dir, graph_type):
     elif graph_type == 'co-exp' or graph_type == 'co-ess':
         if graph_type == 'co-exp':
             data = pd.read_csv(f"{data_dir}/coexpression_exp_0.5.csv")
+            # sample coexpression
+            sampled_data = data.sample(n=20000, random_state=42)
         elif graph_type == 'co-ess':
             data = pd.read_csv(f"{data_dir}/coexpression_ess_0.5.csv")
+            # random choose 2000 pairs
+            sampled_data = data.sample(n=20000, random_state=42)
 
         # make it indirected graph
-        data_dup = data.reindex(columns=['gene2','gene1'])
+        data_dup = sampled_data.reindex(columns=['gene2','gene1'])
         data_dup.columns = ['gene1','gene2']
-        data = pd.concat([data, data_dup])
+        sampled_data = pd.concat([sampled_data, data_dup])
+        return sampled_data
         
     elif graph_type == "random":
         data = pd.read_csv(f"{data_dir}/BIOGRID-9606.csv", index_col=0)
@@ -345,7 +350,8 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
         # all other samples can be validation samples
         np.random.shuffle(SL_genes)
         training_genes = SL_genes[:int(len(SL_genes)*training_percent)]
-        val_genes = SL_genes[int(len(SL_genes)*training_percent):int(len(SL_genes)*(training_percent+0.1))]
+        val_genes = SL_genes[int(len(SL_genes)*training_percent):max(int(len(SL_genes)*training_percent) + 1 , \
+                                                                        int(len(SL_genes)*(training_percent+0.1)))]
         test_genes = SL_genes[int(len(SL_genes)*(training_percent+0.1)):]
         print("#####################################")
         print("Number of genes in train, val and test:", len(training_genes), len(val_genes), len(test_genes))
@@ -380,26 +386,9 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
             
             graph_data = graph_data[graph_data['label']==True]
             graph_data = graph_data[['gene1','gene2']]
-        elif graph_type == "PPI-genetic":
+        elif graph_type == "PPI-genetic" or graph_type == "PPI-physical" :
             graph_data = load_graph_data(data_dir, graph_type)
-            # removing edges already in the SL data
-            SL_pos = SL_data[SL_data['label'] == True]
-            SL_pos_list = sorted([tuple(r) for r in SL_pos[['gene1','gene2']].to_numpy()] + [tuple(r) for r in SL_pos[['gene2','gene1']].to_numpy()])
-            graph_list = [tuple(r) for r in graph_data[['gene1','gene2']].to_numpy()]
-            #print(graph_list)
-            left = list(set(graph_list) - set(SL_pos_list))
-            #print(left)
-            graph_data = pd.DataFrame(left, columns=['gene1','gene2'])
-            if cell_name != "synlethdb":
-                graph_data = graph_data[(graph_data["gene1"].isin(kept_genes))&(graph_data["gene2"].isin(kept_genes))]
-        elif graph_type == "PPI-physical":
-            graph_data = load_graph_data(data_dir, graph_type)
-            # removing edges already in the SL data
-            SL_pos = SL_data[SL_data['label'] == True]
-            SL_pos_list = sorted([tuple(r) for r in SL_pos[['gene1','gene2']].to_numpy()] + [tuple(r) for r in SL_pos[['gene2','gene1']].to_numpy()])
-            graph_list = [tuple(r) for r in graph_data[['gene1','gene2']].to_numpy()]
-            left = list(set(graph_list) - set(SL_pos_list))
-            graph_data = pd.DataFrame(left, columns=['gene1','gene2'])
+            graph_data = pd.DataFrame(graph_data, columns=['gene1','gene2'])
             if cell_name != "synlethdb":
                 graph_data = graph_data[(graph_data["gene1"].isin(kept_genes))&(graph_data["gene2"].isin(kept_genes))]
         else:
@@ -416,14 +405,6 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
 
     # generate node features
     x = choose_node_attribute(data_dir, attr, gene_mapping, cell_name, graph_data_list)
-    if node2vec_feats_flag:
-        node2vec_feats = choose_node_attribute(data_dir, 'node2vec', gene_mapping, cell_name, graph_data_list)
-        x = np.hstack((x,node2vec_feats))
-        x = scale(x)
-    if CCLE_feats_flag:
-        CCLE_feats = load_CCLE_feats("PCA", ['exp','ess'], gene_mapping, CCLE_hidden_dim)
-        x = np.hstack((x,CCLE_feats))
-        x = scale(x)
     
     # generate torch data
     data_x = torch.tensor(x, dtype=torch.float)
@@ -448,9 +429,12 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
         SL_data_val = SL_data[(SL_data['gene1'].isin(val_genes))&(SL_data['gene2'].isin(val_genes))]
         SL_data_test = SL_data[(SL_data['gene1'].isin(test_genes))&(SL_data['gene2'].isin(test_genes))]
     elif split_method == "novel_pair":
-        SL_data_train = SL_data.iloc[all_idx[:int(len(all_idx)*training_percent)]]
-        SL_data_val = SL_data.iloc[all_idx[int(len(all_idx)*training_percent):int(len(all_idx)*(training_percent+0.1))]]
-        SL_data_test = SL_data.iloc[all_idx[int(len(all_idx)*(training_percent+0.1)):]]
+        end1 = int(len(all_idx)*training_percent)
+        end2 = int(len(all_idx)*(training_percent+0.125))
+        print(all_idx[end1], all_idx[end2], len(all_idx))
+        SL_data_train = SL_data.iloc[all_idx[:end1]]
+        SL_data_val = SL_data.iloc[all_idx[end1:end2]]
+        SL_data_test = SL_data.iloc[all_idx[end2:]]
     
     # print info
     num_pos_train = SL_data_train[SL_data_train["label"]==True].shape[0]
@@ -489,10 +473,25 @@ def generate_torch_edges(df, balanced_sample, duplicate, device, neg_num):
     return pos_edge_idx, neg_edge_idx
 
 
-def get_link_labels(pos_edge_index, neg_edge_index, device):
-    num_links = pos_edge_index.size(1) + neg_edge_index.size(1)
-    link_labels = torch.zeros(num_links, dtype=torch.float, device=device)
-    link_labels[:pos_edge_index.size(1)] = 1.
+def get_link_labels(pos_edge_index, neg_edge_index, support_views_edge_index, device):
+    """
+    Generate link labels for positive and negative edges for each view.
+    support_views_edge_index: (#views, 2, #edges)
+    """
+    all_edge_index = torch.cat([pos_edge_index, neg_edge_index], dim=1)
+    num_links = all_edge_index.size(1)
+    link_labels = torch.zeros((len(support_views_edge_index) + 1, num_links), device=device)
+    # SL_data labels
+    link_labels[0, :pos_edge_index.size(1)] = 1
+    # support views labels
+    for _ in range(num_links):
+        edge = all_edge_index[:, _].reshape(2,1)
+        # whether the edge is in the support views(2, #edges)
+        for i, view_edge_index in enumerate(support_views_edge_index):
+            edge_expanded = edge.expand_as(view_edge_index)
+            if torch.any(torch.all(edge_expanded == view_edge_index, dim=0)):
+                link_labels[i + 1, _] = 1
+
     return link_labels
     
 def calculate_coexpression(data_dir, data_type, rho_thres):
