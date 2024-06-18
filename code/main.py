@@ -51,6 +51,14 @@ def init_argparse():
     parser.add_argument('--predict_novel_cellline', type=int, default=0, help="whether to predict on novel cell lines")
     parser.add_argument('--novel_cellline', type=str, default="Jurkat", help="name of novel celllines")
     parser.add_argument('--MLP_celline', type=int, default=0, help="use celline feats or not")
+
+
+    parser.add_argument('--src_len', default=512, type=int, help='length of transformer dimention')
+    parser.add_argument('--d_model', default=512, type=int, help='Embedding Size')
+    parser.add_argument('--d_ff', default=2048, type=int, help='FeedForward dimension')
+    parser.add_argument('--d_k', default=64, type=int, help='dimension of K(=Q), V')
+    parser.add_argument('--n_layers', default=2, type=int, help='number of Encoder of Decoder Layer')
+    parser.add_argument('--n_heads', default=4, type=int, help='number of heads in Multi-Head Attention')
     
     parser.add_argument('--neg_num', type=float, default=1, help='number of negative samples is several times that of the positive samples')
 
@@ -96,16 +104,16 @@ def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, su
 
         for i, edge_index in enumerate(support_views_edge_index):
             z = model.GCNs[i+1].encode(node_embedding, edge_index)
-            if args.pooling == "agg" or "transformer":
+            if args.pooling == "agg":
                 z = z * model.weight_views[i]
             views_z.append(z)
             link_logits = model.GCNs[i+1].decode(z, this_batch_edge_index)
             batch_loss += model.weight_views[i] * F.binary_cross_entropy_with_logits(link_logits, link_labels[i+1], pos_weight=pos_weight)
         
         z = torch.cat(views_z,1)
-        
-        # z(batch_size, num_views * numfeatures) -> z(batch_size, num_views, numfeatures) -> z(batch_size, numfeatures, num_views)
-        z = z.unsqueeze(1).reshape(z.shape[0], model.num_graph, -1).transpose(1,2)
+        if args.pooling != "transformer":
+            # z(batch_size, num_views * numfeatures) -> z(batch_size, num_views, numfeatures) -> z(batch_size, numfeatures, num_views)
+            z = z.unsqueeze(1).reshape(z.shape[0], model.num_graph, -1).transpose(1,2)
         if args.pooling == "max":
             z = F.max_pool2d(z, (1,model.num_graph)).squeeze(2)
         elif args.pooling == "mean":    
@@ -114,8 +122,7 @@ def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, su
             # sum up the embeddings of different views with weights
             z = z.sum(-1)
         elif args.pooling == "transformer":
-            z = z.sum(-1)
-            transformer_output = model.transformer_encoder(z[this_batch_node_index])
+            transformer_output = model.modified_transformer(z[this_batch_node_index])
             z1 = transformer_output[[this_batch_node_index_map[i.item()] for i in this_batch_edge_index[0]]]
             z2 = transformer_output[[this_batch_node_index_map[i.item()] for i in this_batch_edge_index[1]]]
             
@@ -158,7 +165,7 @@ def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_ind
 
     for i, edge_index in enumerate(support_views_edge_index):
         z = model.GCNs[i+1].encode(node_embedding, edge_index)
-        if args.pooling == "agg" or "transformer":
+        if args.pooling == "agg":
             z = z * model.weight_views[i]
         views_z.append(z)
         link_logits = model.GCNs[i+1].decode(z, all_edge_index)
@@ -166,7 +173,8 @@ def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_ind
     
     z = torch.cat(views_z,1)
     
-    z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
+    if args.pooling != "transformer":
+        z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
 
     if args.pooling == "max":
         z = F.max_pool2d(z, (1,model.num_graph)).squeeze(2)
@@ -175,8 +183,7 @@ def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_ind
     elif args.pooling == "agg":
         z = z.sum(-1)
     elif args.pooling == "transformer":
-        z = z.sum(-1)
-        transformer_output = model.transformer_encoder(z[all_node_index])
+        transformer_output = model.modified_transformer(z[all_node_index])
         z1 = transformer_output[[all_node_index_map[i.item()] for i in all_edge_index[0]]]
         z2 = transformer_output[[all_node_index_map[i.item()] for i in all_edge_index[1]]]
         
@@ -265,7 +272,7 @@ if __name__ == "__main__":
         num_features = num_features + 16
 
     # load model
-    model = SLMGAE(num_features, args.out_channels, len(data.edge_index_list),esm_dim, mlp_dim, args.data_dir, gene_mapping, celline_feats).to(device)
+    model = SLMGAE(num_features, args.out_channels, len(data.edge_index_list),esm_dim, mlp_dim, args.data_dir, gene_mapping, celline_feats, args).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.LR)
 

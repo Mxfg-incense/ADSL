@@ -123,7 +123,7 @@ class GCN_attention(torch.nn.Module):
         return torch.squeeze(x)
 
 class SLMGAE(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, num_graph, esm_dim, mlp_dim, data_dir, gene_mapping, celline_feats):
+    def __init__(self, in_channels, out_channels, num_graph, esm_dim, mlp_dim, data_dir, gene_mapping, celline_feats, args):
         super(SLMGAE, self).__init__()
         # number of GCN
         self.num_graph = num_graph
@@ -132,6 +132,7 @@ class SLMGAE(torch.nn.Module):
         self.data_dir = data_dir
         self.gene_mapping = gene_mapping
         self.celline_feats = celline_feats
+        self.args = args
         self.GCNs = torch.nn.ModuleList()
         for _ in range(num_graph):
             self.GCNs.append(GCN(in_channels, out_channels))
@@ -140,8 +141,10 @@ class SLMGAE(torch.nn.Module):
         self.weight_views = torch.nn.Parameter(torch.nn.functional.softmax(self.weight_views, dim=0))
         
         # transforer
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=out_channels, nhead=8)
-        self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=2)
+        self.transformer = transformer.Transformer(args)
+        self.transformer_fc1 = torch.nn.Linear(2*args.d_model, args.d_model)
+        self.transformer_fc2 = torch.nn.Linear(args.d_model, int(args.d_model / 2))
+        self.transformer_fc3 = torch.nn.Linear(int(args.d_model / 2), 2 * out_channels)
 
         out_channels_classifer = out_channels + esm_dim + mlp_dim
         self.fc1 = torch.nn.Linear(2*out_channels_classifer, out_channels_classifer)
@@ -153,9 +156,30 @@ class SLMGAE(torch.nn.Module):
 
         if self.esm_dim != 0:
             self.esm_representation = load_ESM_representations(self.data_dir, self.gene_mapping)
+
+    def build_mask_matrix(self,input_len):
+        mask_matrix=torch.ones(self.args.src_len, self.args.src_len,dtype=torch.bool)
+        mask_matrix[0:input_len,0:input_len]=0
+        mask_matrix = mask_matrix.unsqueeze(0).unsqueeze(0).repeat(1, self.args.n_heads, 1, 1)
+        return mask_matrix
+
+    def modified_transformer(self,transformer_input):
+        length=len(transformer_input)
+        mask_matrix = self.build_mask_matrix(length)
+        transformer_input = torch.cat([transformer_input, torch.zeros((self.args.src_len - length, 5 * 64))], dim=0)
+        #transformer_input=self.fc_pre(transformer_input)
+
+        transformer_output=self.transformer(transformer_input,mask_matrix)
+        return transformer_output[0:length]
     
     def decode_transformer(self, z1, z2):
         x = torch.cat((z1, z2), dim=1)
+        x = self.transformer_fc1(x).relu()
+        x = self.dropout(x)
+        x = self.transformer_fc2(x).relu()
+        x = self.dropout(x)
+        x = self.transformer_fc3(x).relu()
+        x = self.dropout(x)
         x = self.fc1(x).relu()
         x = self.dropout(x)
         x = self.fc2(x).relu()
