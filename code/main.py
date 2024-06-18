@@ -16,7 +16,7 @@ import torch.nn as nn
 from sklearn.preprocessing import LabelEncoder
 import torch.optim as optim
 
-
+torch.autograd.set_detect_anomaly(True)
 
 def init_argparse():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -103,16 +103,23 @@ def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, su
 
         for i, edge_index in enumerate(support_views_edge_index):
             z = model.GCNs[i+1].encode(node_embedding, edge_index)
+            if args.pooling == "agg":
+                z = z * model.weight_views[i]
             views_z.append(z)
             link_logits = model.GCNs[i+1].decode(z, this_batch_edge_index)
-            batch_loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[i+1], pos_weight=pos_weight)
+            batch_loss += model.weight_views[i] * F.binary_cross_entropy_with_logits(link_logits, link_labels[i+1], pos_weight=pos_weight)
         
         z = torch.cat(views_z,1)
         
         # z(batch_size, num_views * numfeatures) -> z(batch_size, num_views, numfeatures) -> z(batch_size, numfeatures, num_views)
         z = z.unsqueeze(1).reshape(z.shape[0], model.num_graph, -1).transpose(1,2)
-        z = F.max_pool2d(z, (1,model.num_graph)).squeeze(2) if args.pooling == "max" \
-                else F.avg_pool2d(z, (1,model.num_graph)).squeeze(2)
+        if args.pooling == "max":
+            z = F.max_pool2d(z, (1,model.num_graph)).squeeze(2)
+        elif args.pooling == "mean":    
+            z = F.avg_pool2d(z, (1,model.num_graph)).squeeze(2)
+        elif args.pooling == "agg":
+            # sum up the embeddings of different views with weights
+            z = z.sum(-1)
 
         link_logits = model.decode(z, this_batch_edge_index)
             
@@ -149,15 +156,22 @@ def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_ind
 
     for i, edge_index in enumerate(support_views_edge_index):
         z = model.GCNs[i+1].encode(node_embedding, edge_index)
+        if args.pooling == "agg":
+            z = z * model.weight_views[i]
         views_z.append(z)
         link_logits = model.GCNs[i+1].decode(z, all_edge_index)
-        loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[i+1], pos_weight=pos_weight)
+        loss += model.weight_views[i] *F.binary_cross_entropy_with_logits(link_logits, link_labels[i+1], pos_weight=pos_weight)
     
     z = torch.cat(views_z,1)
     
     z = z.unsqueeze(1).reshape(z.shape[0],len(data.edge_index_list),-1).transpose(1,2)
-    z = F.max_pool2d(z, (1,len(data.edge_index_list))).squeeze(2) if args.pooling == "max" \
-            else F.avg_pool2d(z, (1,len(data.edge_index_list))).squeeze(2)
+
+    if args.pooling == "max":
+        z = F.max_pool2d(z, (1,model.num_graph)).squeeze(2)
+    elif args.pooling == "mean":    
+        z = F.avg_pool2d(z, (1,model.num_graph)).squeeze(2)
+    elif args.pooling == "agg":
+        z = z.sum(-1)
 
     link_logits = model.decode(z, all_edge_index)
     
@@ -302,7 +316,6 @@ if __name__ == "__main__":
                 print("Early Stopping!!!")
                 break
         
-
         # load the last checkpoint with the best model
         model.load_state_dict(torch.load(checkpoint_path))
 

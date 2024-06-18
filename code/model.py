@@ -135,7 +135,10 @@ class SLMGAE(torch.nn.Module):
         self.GCNs = torch.nn.ModuleList()
         for _ in range(num_graph):
             self.GCNs.append(GCN(in_channels, out_channels))
-
+        # Initialize weights for each view
+        self.weight_views = torch.ones(num_graph - 1)
+        self.weight_views = torch.nn.Parameter(torch.nn.functional.softmax(self.weight_views, dim=0))
+        
         out_channels_classifer = out_channels + esm_dim + mlp_dim
         self.fc1 = torch.nn.Linear(2*out_channels_classifer, out_channels_classifer)
         self.fc2 = torch.nn.Linear(out_channels_classifer, int(out_channels_classifer/2))
