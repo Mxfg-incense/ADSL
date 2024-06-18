@@ -1,4 +1,4 @@
-gene_1,gene_2,cell_line_origin,horlbeck_score_SL_score,gene1_primekg_index,gene2_primekg_index,label,cell_id
+gene1,gene2,cell_line_origin,horlbeck_score_SL_score,gene1_primekg_index,gene2_primekg_index,label,cell_id
 BCL2,CHEK2,A375,0.965297792,2429,6966,0,0
 AKT1,CHEK2,A375,0.944633765,1057,6966,0,0
 CHEK2,UBC,A375,0.900601837,6966,189,0,0

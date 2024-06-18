@@ -59,7 +59,6 @@ def init_argparse():
     parser.add_argument('--n_layers', default=2, type=int, help='number of Encoder of Decoder Layer')
     parser.add_argument('--n_heads', default=4, type=int, help='number of heads in Multi-Head Attention')
     
-    parser.add_argument('--use_SLscore', type=bool, default=False, help='if use SLscore to select samples')
     parser.add_argument('--neg_num', type=float, default=1, help='number of negative samples is several times that of the positive samples')
 
     args = parser.parse_args()
@@ -285,7 +284,7 @@ if __name__ == "__main__":
         sys.exit(0)
     # load data
     data, SL_data_train, SL_data_val, SL_data_test, SL_data_novel, gene_mapping = generate_torch_geo_data(args.data_dir, args.data_source, args.CCLE, args.CCLE_dim, args.node2vec_feats, 
-                                    args.threshold, graph_input, args.node_feats, args.split_method, args.predict_novel_cellline, args.novel_cellline,  args.training_percent, args.use_SLscore)
+                                    args.threshold, graph_input, args.node_feats, args.split_method, args.predict_novel_cellline, args.novel_cellline,  args.training_percent)
     celline_feats = data.x
     num_features = data.x.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -312,10 +311,10 @@ if __name__ == "__main__":
 
     # generate SL torch data
     #train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
-    val_pos_edge_index, val_neg_edge_index = generate_torch_edges(SL_data_val, True, False, device, 1, False)
-    test_pos_edge_index, test_neg_edge_index = generate_torch_edges(SL_data_test, True, False, device, 1, False)
+    val_pos_edge_index, val_neg_edge_index = generate_torch_edges(SL_data_val, True, False, device, 1)
+    test_pos_edge_index, test_neg_edge_index = generate_torch_edges(SL_data_test, True, False, device, 1)
     if args.predict_novel_cellline:
-        novel_pos_edge_index, novel_neg_edge_index = generate_torch_edges(SL_data_novel, True, False, device, 1, False)
+        novel_pos_edge_index, novel_neg_edge_index = generate_torch_edges(SL_data_novel, True, False, device, 1)
 
     
     checkpoint_path = "../ckpt/{}_{}.pt".format(args.data_source,args.model)
@@ -342,7 +341,7 @@ if __name__ == "__main__":
                      
         for epoch in range(1, args.epochs + 1):
             # in each epoch, using different negative samples
-            train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device, args.neg_num, args.use_SLscore)
+            train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device, args.neg_num)
             train_loss = train_model(model, optimizer, data, device, train_pos_edge_index, train_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
             train_losses.append(train_loss)
             val_loss, results = test_model(model, optimizer, data, device, val_pos_edge_index, val_neg_edge_index, args.esm_reps_flag, args.data_dir, celline_feats)
@@ -366,6 +365,6 @@ if __name__ == "__main__":
     save_dict = {**vars(args), **results}
         
     if args.save_results:
-        with open("/public/home/CS177/zhuoyan-cs177/ADSL/results/MVGCN_{}_{}_{}_{}_{}.json".format(args.data_source, args.model, args.pooling, args.MLP_celline, args.esm_reps_flag), "a") as f:
+        with open("../results/MVGCN_{}_{}_{}_{}_{}.json".format(args.data_source, args.model, args.pooling, args.MLP_celline, args.esm_reps_flag), "a") as f:
             json.dump(save_dict, f)
             f.write('\n')
