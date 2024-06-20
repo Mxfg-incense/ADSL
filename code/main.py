@@ -278,10 +278,10 @@ if __name__ == "__main__":
 
     # generate SL torch data
     #train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
-    val_pos_edge_index, val_neg_edge_index = generate_torch_edges(SL_data_val, True, False, device, 1)
-    test_pos_edge_index, test_neg_edge_index = generate_torch_edges(SL_data_test, True, False, device, 1)
+    val_pos_edge_index, val_neg_edge_index = generate_torch_edges(SL_data_val, args.balanced, False, device, args.neg_num)
+    test_pos_edge_index, test_neg_edge_index = generate_torch_edges(SL_data_test, args.balanced, False, device, args.neg_num)
     if args.predict_novel_cellline:
-        novel_pos_edge_index, novel_neg_edge_index = generate_torch_edges(SL_data_novel, True, False, device, 1)
+        novel_pos_edge_index, novel_neg_edge_index = generate_torch_edges(SL_data_novel, True, False, device, args.neg_num)
 
     
     checkpoint_path = "../ckpt/{}_{}.pt".format(args.data_source,args.model)
