@@ -18,8 +18,15 @@ We use `torch` as the architecture to build our deep learning model, and `torch-
 
 ## Train the model
 
-```
+The following command is an example to train the model on the A549 cell line with the transformer pooling method. 
+
+```bash
 cd code/
-python main.py --pooling attention --model GCN_attention --data_source A549 # training on A549 data
-python main.py --pooling attention --model GCN_attention --data_source A549 --predict_novel_cellline 1 --novel_cellline Jurkat# test on Jurkat data
+python main.py --balanced 0 --data_source A549  --pooling transformer --epoch 200 --neg_num 2 --test 0 --esm_reps_flag 1 --MLP_celline 1
+```
+After training, the checkpoint will be saved in the `ckpt/` folder and test results and experiment logs will be saved in the `results/` folder.
+To load the trained model and evaluate it on the test set, you can use the following command:
+
+```bash
+python main.py --balanced 0 --data_source A549  --pooling transformer --epoch 200 --neg_num 2 --test 1 --esm_reps_flag 1 --MLP_celline 1
 ```

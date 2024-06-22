@@ -526,6 +526,8 @@ def ranking_metrics(true_labels, pred_scores, top=0.05):
 
 
 def evaluate_performance(label, pred):
+    print("Label last 10:", label[-10:])    
+    print("Pred last 10:", pred[-10:])
     AUC = roc_auc_score(label, pred)
     AUPR = average_precision_score(label, pred)
     F1 = f1_score(label, np.round(pred))

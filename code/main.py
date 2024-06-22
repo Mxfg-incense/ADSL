@@ -40,7 +40,7 @@ def init_argparse():
     parser.add_argument('--pooling', type=str, default="max", help="type of pooling operations")
     parser.add_argument('--LR', type=float, default=0.0001, help="learning rate")
     parser.add_argument('--epochs', type=int, default=200, help="number of maximum training epochs")
-    parser.add_argument('--batch_size', type=int, default=512, help="batch size")
+    parser.add_argument('--batch_size', type=int, default=64, help="batch size")
     parser.add_argument('--out_channels', type=int, default=64, help="dimension of output channels")
     parser.add_argument('--patience', type=int, default=150, help="patience in early stopping")
     parser.add_argument('--training_percent', type=float, default=0.70, help="proportion of the SL data as training set")
@@ -144,7 +144,7 @@ def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, su
 
 
 @torch.no_grad()
-def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, pos_edge_index, neg_edge_index):
+def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, pos_edge_index, neg_edge_index, test=False):
     model.eval()
     results = {}
     loss = 0
@@ -200,6 +200,20 @@ def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_ind
     link_probs = link_logits.sigmoid()
 
     results = evaluate_performance(link_labels[0].cpu().numpy(), link_probs.cpu().numpy())
+
+    if test:
+        link_probs_neg = link_probs.cpu().numpy()[len(pos_edge_index[0]):]
+        # find the top 10 negative samples, sort and get the index
+        top_10_index = np.argsort(-link_probs_neg)[:10]
+        with open("../data/{}_gene_mapping.json".format(args.data_source), "r") as f:
+            gene_mapping = json.load(f)
+        for i in top_10_index:
+            gene1_id = all_edge_index[0][i].item()
+            gene2_id = all_edge_index[1][i].item()
+            # read the gene mapping file
+            gene1 = list(gene_mapping.keys())[list(gene_mapping.values()).index(gene1_id)]
+            gene2 = list(gene_mapping.keys())[list(gene_mapping.values()).index(gene2_id)]
+            print(f"The predicted pair is {gene1} --- {gene2}, the score is {link_probs_neg[i]:.4f}")
 
     return float(loss), results
 
@@ -265,6 +279,10 @@ if __name__ == "__main__":
     # load data
     data, SL_data_train, SL_data_val, SL_data_test, gene_mapping = generate_torch_geo_data(args.data_dir, args.data_source, args.CCLE, args.CCLE_dim, args.node2vec_feats, 
                                     args.threshold, graph_input, args.node_feats, args.split_method, args.predict_novel_cellline, args.novel_cellline,  args.training_percent)
+    # write gene mapping into a file
+    with open("../data/{}_gene_mapping.json".format(args.data_source), "w") as f:
+        json.dump(gene_mapping, f)
+
     celline_feats = data.x
     num_features = data.x.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -287,7 +305,7 @@ if __name__ == "__main__":
     val_pos_edge_index, val_neg_edge_index = generate_torch_edges(SL_data_val, args.balanced, False, device, args.neg_num)
     test_pos_edge_index, test_neg_edge_index = generate_torch_edges(SL_data_test, args.balanced, False, device, args.neg_num)
     
-    checkpoint_path = "../ckpt/{}_{}.pt".format(args.data_source,args.model)
+    checkpoint_path = "../ckpt/{}_{}_{}_{}.pt".format(args.data_source,args.pooling, args.esm_reps_flag, args.MLP_celline)
 
     if args.MLP_celline:
         with torch.no_grad():
@@ -322,7 +340,7 @@ if __name__ == "__main__":
     # load the last checkpoint with the best model
     model.load_state_dict(torch.load(checkpoint_path))
 
-    test_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, test_pos_edge_index, test_neg_edge_index)
+    test_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, test_pos_edge_index, test_neg_edge_index, True)
     print("\ntest result:")
     print('AUC: {:.4f}, AP: {:.4f}, F1: {:.4f}, balance_acc: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], results['precision@5'], results['precision@10']))
     save_dict = {**vars(args), **results}
