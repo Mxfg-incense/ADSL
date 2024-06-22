@@ -141,16 +141,17 @@ class SLMGAE(torch.nn.Module):
         self.weight_views = torch.nn.Parameter(torch.nn.functional.softmax(self.weight_views, dim=0))
         
         # transforer
+        in_channels_transformer = args.d_model + esm_dim + mlp_dim
         self.transformer = transformer.Transformer(args)
-        self.transformer_fc1 = torch.nn.Linear(2*args.d_model, args.d_model)
-        self.transformer_fc2 = torch.nn.Linear(args.d_model, int(args.d_model / 2))
-        self.transformer_fc3 = torch.nn.Linear(int(args.d_model / 2), 2 * out_channels)
+        self.transformer_fc1 = torch.nn.Linear(2*in_channels_transformer, in_channels_transformer)
+        self.transformer_fc2 = torch.nn.Linear(in_channels_transformer, int(in_channels_transformer / 2))
+        self.transformer_fc3 = torch.nn.Linear(int(in_channels_transformer / 2), 2 * out_channels)
 
-        out_channels_classifer = out_channels + esm_dim + mlp_dim
-        self.fc1 = torch.nn.Linear(2*out_channels_classifer, out_channels_classifer)
-        self.fc2 = torch.nn.Linear(out_channels_classifer, int(out_channels_classifer/2))
-        self.fc3 = torch.nn.Linear(int(out_channels_classifer/2), int(out_channels_classifer/4))
-        self.fc4 = torch.nn.Linear(int(out_channels_classifer/4), 1)
+        in_channels_classifer = out_channels + esm_dim + mlp_dim if args.pooling != "transformer" else out_channels
+        self.fc1 = torch.nn.Linear(2*in_channels_classifer, in_channels_classifer)
+        self.fc2 = torch.nn.Linear(in_channels_classifer, int(in_channels_classifer/2))
+        self.fc3 = torch.nn.Linear(int(in_channels_classifer/2), int(in_channels_classifer/4))
+        self.fc4 = torch.nn.Linear(int(in_channels_classifer/4), 1)
         self.dropout = torch.nn.Dropout(0.5)
         self.cell_line_spec_mlp = MLP(4)
 
@@ -172,7 +173,20 @@ class SLMGAE(torch.nn.Module):
         transformer_output=self.transformer(transformer_input,mask_matrix)
         return transformer_output[0:length]
     
-    def decode_transformer(self, z1, z2):
+    def decode_transformer(self, z, edge_index, node_index_map):
+        new_edge_index = torch.zeros((2, len(edge_index[0])), dtype=torch.int64)
+        for i in range(len(edge_index[0])):
+            new_edge_index[0][i] = node_index_map[edge_index[0][i].item()]
+            new_edge_index[1][i] = node_index_map[edge_index[1][i].item()]
+        z1 = z[new_edge_index[0]]
+        z2 = z[new_edge_index[1]]
+        if self.mlp_dim != 0:
+            MLP_output = self.cell_line_spec_mlp(self.celline_feats)
+            z1 = torch.cat((z1, MLP_output[new_edge_index[0]]), dim = 1)
+            z2 = torch.cat((z2, MLP_output[new_edge_index[1]]), dim = 1)
+        if self.esm_dim != 0:
+            z1 = torch.cat([z1, self.esm_representation[new_edge_index[0]]], dim=1)
+            z2 = torch.cat([z2, self.esm_representation[new_edge_index[1]]], dim=1)
         x = torch.cat((z1, z2), dim=1)
         x = self.transformer_fc1(x).relu()
         x = self.dropout(x)

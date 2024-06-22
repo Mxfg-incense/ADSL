@@ -291,11 +291,11 @@ def load_CCLE_feats(data_dir, process_method, feats_list, gene_mapping, hidden_d
     return combined_embeds
 
 
-def merge_and_mapping(SL_data, graph_data_list, SL_genes, SL_data_novel, SL_gene_novel):
+def merge_and_mapping(SL_data, graph_data_list, SL_genes):
     # use the union of SL genes and graph genes as all genes
     temp_concat_graph_data = pd.concat(graph_data_list)
     graph_genes = set(temp_concat_graph_data['gene1'].unique()) | set(temp_concat_graph_data['gene2'].unique())
-    all_genes = sorted(list(set(set(SL_genes) | set(SL_gene_novel)) | graph_genes))
+    all_genes = sorted(list(set(set(SL_genes)| graph_genes)))
 
     gene_mapping = dict(zip(all_genes, range(len(all_genes))))
 
@@ -307,10 +307,8 @@ def merge_and_mapping(SL_data, graph_data_list, SL_genes, SL_data_novel, SL_gene
     
     SL_data['gene1'] = SL_data['gene1'].apply(lambda x:gene_mapping[x])
     SL_data['gene2'] = SL_data['gene2'].apply(lambda x:gene_mapping[x])
-    SL_data_novel['gene1'] = SL_data_novel['gene1'].apply(lambda x:gene_mapping[x])
-    SL_data_novel['gene2'] = SL_data_novel['gene2'].apply(lambda x:gene_mapping[x])
 
-    return SL_data, SL_data_novel ,graph_data_list, gene_mapping
+    return SL_data ,graph_data_list, gene_mapping
 
     
 def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_dim, node2vec_feats_flag, threshold, graph_input, attr, split_method, predict_novel_flag, novel_cell_name, training_percent):
@@ -341,7 +339,6 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
     # load data
 
     SL_data, SL_genes = load_SL_data(data_dir, cell_name, threshold)
-    SL_data_novel, SL_gene_novel = load_SL_data(data_dir, novel_cell_name, threshold)
     
     # generate SL torch data, split into train, valid, test
     np.random.seed(5959)
@@ -401,7 +398,7 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
         graph_data_list.append(graph_data)
         
     # merge, filter and mapping
-    SL_data, SL_data_novel, graph_data_list, gene_mapping = merge_and_mapping(SL_data, graph_data_list, SL_genes, SL_data_novel, SL_gene_novel)
+    SL_data, graph_data_list, gene_mapping = merge_and_mapping(SL_data, graph_data_list, SL_genes)
 
     # generate node features
     x = choose_node_attribute(data_dir, attr, gene_mapping, cell_name, graph_data_list)
@@ -444,7 +441,7 @@ def generate_torch_geo_data(data_dir, cell_name, CCLE_feats_flag, CCLE_hidden_di
     print("Number of positive samples in train, val and test:", num_pos_train, num_pos_val, num_pos_test)
     print("#####################################")
     
-    return data, SL_data_train, SL_data_val, SL_data_test, SL_data_novel, gene_mapping
+    return data, SL_data_train, SL_data_val, SL_data_test, gene_mapping
 
 
 def generate_torch_edges(df, balanced_sample, duplicate, device, neg_num):

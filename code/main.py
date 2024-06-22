@@ -36,7 +36,7 @@ def init_argparse():
     parser.add_argument('--CCLE_dim', type=int, default=64, help="dimension of embeddings for each type of CCLE omics data")
     parser.add_argument('--node2vec_feats', type=int, default=0, help="whether or not using node2vec embeddings")
 
-    parser.add_argument('--model', type=str, default="GCN_pool", help="type of model")
+    parser.add_argument('--model', type=str, default="SLMAGE", help="type of model")
     parser.add_argument('--pooling', type=str, default="max", help="type of pooling operations")
     parser.add_argument('--LR', type=float, default=0.0001, help="learning rate")
     parser.add_argument('--epochs', type=int, default=200, help="number of maximum training epochs")
@@ -49,6 +49,7 @@ def init_argparse():
     parser.add_argument('--save_results', type=int, default=1, help="whether to save test results into json")
     parser.add_argument('--split_method', type=str, default="novel_pair", help="how to split data into train, val and test")
     parser.add_argument('--predict_novel_cellline', type=int, default=0, help="whether to predict on novel cell lines")
+    parser.add_argument('--test', type=int, default=0, help="whether to train or load trained model`")
     parser.add_argument('--novel_cellline', type=str, default="Jurkat", help="name of novel celllines")
     parser.add_argument('--MLP_celline', type=int, default=0, help="use celline feats or not")
 
@@ -122,11 +123,14 @@ def train_model(model: SLMGAE, optimizer, node_embedding, SL_data_edge_index, su
             # sum up the embeddings of different views with weights
             z = z.sum(-1)
         elif args.pooling == "transformer":
-            transformer_output = model.modified_transformer(z[this_batch_node_index])
-            z1 = transformer_output[[this_batch_node_index_map[i.item()] for i in this_batch_edge_index[0]]]
-            z2 = transformer_output[[this_batch_node_index_map[i.item()] for i in this_batch_edge_index[1]]]
-            
-        link_logits = model.decode(z, this_batch_edge_index) if args.pooling != "transformer" else model.decode_transformer(z1, z2)
+            z = model.modified_transformer(z[this_batch_node_index])
+        else:
+            raise ValueError("Invalid pooling method")
+        
+        if args.pooling == "transformer":
+            link_logits = model.decode_transformer(z, this_batch_edge_index, this_batch_node_index_map)
+        else:
+            link_logits = model.decode(z, this_batch_edge_index)
             
         batch_loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[0], pos_weight=pos_weight)
 
@@ -183,11 +187,13 @@ def test_model(model, node_embedding, SL_data_edge_index, support_views_edge_ind
     elif args.pooling == "agg":
         z = z.sum(-1)
     elif args.pooling == "transformer":
-        transformer_output = model.modified_transformer(z[all_node_index])
-        z1 = transformer_output[[all_node_index_map[i.item()] for i in all_edge_index[0]]]
-        z2 = transformer_output[[all_node_index_map[i.item()] for i in all_edge_index[1]]]
-        
-    link_logits = model.decode(z, all_edge_index) if args.pooling != "transformer" else model.decode_transformer(z1, z2)
+        z = model.modified_transformer(z[all_node_index])
+    else:
+        raise ValueError("Invalid pooling method")
+    if args.pooling == "transformer":
+        link_logits = model.decode_transformer(z, all_edge_index, all_node_index_map)
+    else:
+        link_logits = model.decode(z, all_edge_index) 
             
     loss += 2*F.binary_cross_entropy_with_logits(link_logits, link_labels[0], pos_weight=pos_weight)
     
@@ -257,7 +263,7 @@ if __name__ == "__main__":
         print("Please specify input graph features...")
         sys.exit(0)
     # load data
-    data, SL_data_train, SL_data_val, SL_data_test, SL_data_novel, gene_mapping = generate_torch_geo_data(args.data_dir, args.data_source, args.CCLE, args.CCLE_dim, args.node2vec_feats, 
+    data, SL_data_train, SL_data_val, SL_data_test, gene_mapping = generate_torch_geo_data(args.data_dir, args.data_source, args.CCLE, args.CCLE_dim, args.node2vec_feats, 
                                     args.threshold, graph_input, args.node_feats, args.split_method, args.predict_novel_cellline, args.novel_cellline,  args.training_percent)
     celline_feats = data.x
     num_features = data.x.shape[1]
@@ -280,9 +286,6 @@ if __name__ == "__main__":
     #train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device)
     val_pos_edge_index, val_neg_edge_index = generate_torch_edges(SL_data_val, args.balanced, False, device, args.neg_num)
     test_pos_edge_index, test_neg_edge_index = generate_torch_edges(SL_data_test, args.balanced, False, device, args.neg_num)
-    if args.predict_novel_cellline:
-        novel_pos_edge_index, novel_neg_edge_index = generate_torch_edges(SL_data_novel, True, False, device, args.neg_num)
-
     
     checkpoint_path = "../ckpt/{}_{}.pt".format(args.data_source,args.model)
 
@@ -291,23 +294,15 @@ if __name__ == "__main__":
             MLP_output = model.cell_line_spec_mlp(celline_feats)
             data.x = torch.cat((data.x, MLP_output), dim = 1) 
 
-    if args.predict_novel_cellline:
-        #load check point
-        print("Loading best model...")
-        model.load_state_dict(torch.load(checkpoint_path))
-        print("Predicting on novel the cell line...")
-        data.edge_index_list
-        results = predict_oos(model, optimizer, data, device, novel_pos_edge_index, novel_neg_edge_index)
-        save_dict = {**vars(args), **results}
-        
-    else:
-        train_losses = []
-        valid_losses = []
-        # initialize the early_stopping object
-        early_stopping = EarlyStopping(patience=args.patience, verbose=True, reverse=True, path=checkpoint_path)
-        node_embedding = data.x.to(device)
-        SL_data_edge_index = data.edge_index_list[0].to(device)
-        support_views_edge_index = [edge_index.to(device) for edge_index in data.edge_index_list[1:]]
+    train_losses = []
+    valid_losses = []
+    # initialize the early_stopping object
+    early_stopping = EarlyStopping(patience=args.patience, verbose=True, reverse=True, path=checkpoint_path)
+    node_embedding = data.x.to(device)
+    SL_data_edge_index = data.edge_index_list[0].to(device)
+    support_views_edge_index = [edge_index.to(device) for edge_index in data.edge_index_list[1:]]
+
+    if args.test == 0:
         for epoch in range(1, args.epochs + 1):
             # in each epoch, using different negative samples
             train_pos_edge_index, train_neg_edge_index = generate_torch_edges(SL_data_train, args.balanced, True, device, args.neg_num)
@@ -323,11 +318,11 @@ if __name__ == "__main__":
             if early_stopping.early_stop:
                 print("Early Stopping!!!")
                 break
-        
-        # load the last checkpoint with the best model
-        model.load_state_dict(torch.load(checkpoint_path))
+    
+    # load the last checkpoint with the best model
+    model.load_state_dict(torch.load(checkpoint_path))
 
-        test_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, test_pos_edge_index, test_neg_edge_index)
+    test_loss, results = test_model(model, node_embedding, SL_data_edge_index, support_views_edge_index, device, test_pos_edge_index, test_neg_edge_index)
     print("\ntest result:")
     print('AUC: {:.4f}, AP: {:.4f}, F1: {:.4f}, balance_acc: {:.4f}, precision@5: {:.4f}, precision@10: {:.4f}'.format(results['AUC'], results['AUPR'], results['F1'], results['balance_acc'], results['precision@5'], results['precision@10']))
     save_dict = {**vars(args), **results}
