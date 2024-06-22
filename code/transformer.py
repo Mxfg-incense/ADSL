@@ -169,7 +169,7 @@ class Transformer(nn.Module):
     def __init__(self,opt):
         super(Transformer, self).__init__()
         self.opt=opt
-        self.line1=nn.Linear(320, self.opt.d_model)
+        self.line1=nn.Linear((len(self.opt.indep_graph) + 1) * opt.out_channels, self.opt.d_model)
         self.encoder = Encoder(self.opt)
 
         #self.decoder = Decoder()

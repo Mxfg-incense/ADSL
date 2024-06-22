@@ -71,57 +71,6 @@ class Transformers_model(torch.nn.Module):
         x = self.fc4(x)
         return torch.squeeze(x)
 
-
-class GCN_attention(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, num_graph, args):
-        super(GCN_attention, self).__init__()
-        self.num_graph = num_graph
-        self.conv1 = GCNConv(in_channels, 2*out_channels)
-        self.conv2 = GCNConv(2*out_channels, out_channels)
-
-        # self.fc_pre = torch.nn.Linear(20, 320)
-
-        self.fc1 = torch.nn.Linear(1024, out_channels)
-        self.fc2 = torch.nn.Linear(out_channels, int(out_channels/2))
-        self.fc3 = torch.nn.Linear(int(out_channels/2), int(out_channels/4))
-        self.fc4 = torch.nn.Linear(int(out_channels/4), 1)
-        self.dropout = torch.nn.Dropout(0.5)
-        self.transformer = transformer.Transformer(args)
-        self.args=args
-        self.cell_line_spec_mlp = MLP(4)
-
-    def encode(self, x, edge_index):
-        x = self.conv1(x, edge_index).relu()
-        x = self.conv2(x, edge_index)
-        return x
-
-    def build_mask_matrix(self,input_len):
-        mask_matrix=torch.ones(self.args.src_len, self.args.src_len,dtype=torch.bool)
-        mask_matrix[0:input_len,0:input_len]=0
-        mask_matrix = mask_matrix.unsqueeze(0).unsqueeze(0).repeat(1, self.args.n_heads, 1, 1)
-        return mask_matrix
-
-    def modified_transformer(self,transformer_input):
-        length=len(transformer_input)
-        mask_matrix = self.build_mask_matrix(length)
-        print(transformer_input.size())
-        print(self.args.src_len - length)
-        transformer_input = torch.cat([transformer_input, torch.zeros((self.args.src_len - length, 5 * 64))], dim=0)
-        #transformer_input=self.fc_pre(transformer_input)
-
-        transformer_output=self.transformer(transformer_input,mask_matrix)
-        return transformer_output[0:length]
-
-    def decode(self, x):
-        x = self.fc1(x).relu()
-        x = self.dropout(x)
-        x = self.fc2(x).relu()
-        x = self.dropout(x)
-        x = self.fc3(x).relu()
-        x = self.dropout(x)
-        x = self.fc4(x)
-        return torch.squeeze(x)
-
 class SLMGAE(torch.nn.Module):
     def __init__(self, in_channels, out_channels, num_graph, esm_dim, mlp_dim, data_dir, gene_mapping, celline_feats, args):
         super(SLMGAE, self).__init__()
@@ -167,7 +116,7 @@ class SLMGAE(torch.nn.Module):
     def modified_transformer(self,transformer_input):
         length=len(transformer_input)
         mask_matrix = self.build_mask_matrix(length)
-        transformer_input = torch.cat([transformer_input, torch.zeros((self.args.src_len - length, 5 * 64))], dim=0)
+        transformer_input = torch.cat([transformer_input, torch.zeros((self.args.src_len - length, self.num_graph * self.args.out_channels))], dim=0)
         #transformer_input=self.fc_pre(transformer_input)
 
         transformer_output=self.transformer(transformer_input,mask_matrix)
